@@ -1,0 +1,11 @@
+# Python
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter notebook clutter
+.ipynb_checkpoints/
+
+# Test data
+testrecording*
