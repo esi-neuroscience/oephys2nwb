@@ -4,99 +4,161 @@
 #
 
 import os
-from typing import Type
 import xml.etree.ElementTree as ET
-from hashlib import blake2b
+import uuid
+import json
+from dataclasses import dataclass, field
+from typing import Optional, List
+from pathlib import Path
 from datetime import datetime
+from pydantic import validate_arguments
 from pynwb import NWBFile
 
 
-def read_xml(xmlfile):
-    pass
+@dataclass
+class EphysInfo:
 
+    data_dir : str
+    identifier : Optional[str] = None
+    session_id : Optional[str] = None
+    session_start_time : Optional[datetime] = None
+    experimenter : Optional[str] = None
+    lab : Optional[str] = None
+    institution : Optional[str] = None
+    experiment_description : Optional[str] = None
 
-def export2nwb(recording_dir, session_id=None, session_start_time=None,
-               experimenter=None, institution=None, experiment_description=None):
+    settingsFile : str = field(default="settings.xml", init=False)
+    jsonFile : str = field(default="structure.oebin")
+    root : ET.Element = field(init=False)
+    info : str = field(init=False)
+    machine : str = field(init=False)
+    experimentDir : str = field(init=False)
+    recordingDirs : List = field(init=False)
+    xmlChannels : List = field(init=False)
 
-    if not isinstance(recording_dir, str):
-        raise TypeError("blah")
+    # lon: float = 0.0
+    # lat: float = 0.0
 
-    fullPath = os.path.abspath(os.path.expanduser(os.path.normpath(recording_dir)))
-    if not os.path.isdir(fullPath):
-        raise IOError("blah")
+    def __post_init__(self):
 
-    xmlFiles = []
-    settingsFile = "settings.xml"
-    for cur_path, _, files in os.walk(fullPath):
-        if settingsFile in files:
-            xmlFiles.append(os.path.join(fullPath, cur_path, settingsFile))
+        self.data_dir = os.path.abspath(os.path.expanduser(os.path.normpath(self.data_dir)))
+        if not os.path.isdir(self.data_dir):
+            err = "Provided path {} does not point to an existing directory"
+            raise IOError(err.format(self.data_dir))
 
+        self.process_xml()
 
-    if len(xmlFiles) != 1:
-        raise ValueError("blah")
-    settingsFile = xmlFiles[0]
+        self.process_json()
 
+    def process_xml(self):
 
-    expectedRootTags = ["INFO", "SIGNALCHAIN"]
-    expectedInfoTags = ["DATE", "MACHINE"]
-    expectedChanTags = ["SIGNALCHAIN/PROCESSOR/CHANNEL_INFO/CHANNEL"]
+        xmlFiles = []
+        for cur_path, _, files in os.walk(self.data_dir):
+            if self.settingsFile in files:
+                xmlFiles.append(os.path.join(self.data_dir, cur_path, self.settingsFile))
 
-    # chanInfo = root.find("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
-    # for chan in chanInfo.iter("CHANNEL"):
-    #     print(chan.get("name"))
+        if len(xmlFiles) != 1:
+            err = "Found {numf} {xmlfile} files in {folder}"
+            raise ValueError(err.format(numf=len(xmlFiles), xmlfile=self.settingsFile, folder=self.data_dir))
+        self.settingsFile = xmlFiles[0]
 
-    try:
-        root = ET.parse(settingsFile).getroot()
-    except ET.ParseError as pexc:
-        raise ET.ParseError("blah, original error message: {}".format(str(pexc)))
+        basePath = Path(os.path.split(self.settingsFile)[0])
+        experimentDirs = [str(entry) for entry in basePath.iterdir() if entry.is_dir()]
+        if len(experimentDirs) != 1:
+            err = "Found {numf} experiments in {folder}"
+            raise ValueError(err.format(numf=len(experimentDirs), folder=self.data_dir))
+        self.experimentDir = experimentDirs[0]
 
-    info = _xml_fetch_element(settingsFile, root, "INFO", "INFO")
+        self.recordingDirs = [str(entry) for entry in Path(self.experimentDir).iterdir() if entry.is_dir()]
+        if len(self.recordingDirs) == 0:
+            err = "No recording directory found"
+            raise ValueError(err)
+        if self.session_id is not None and len(self.recordingDirs) > 1:
+            err = "Cannot use single session_id for {} recordings"
+            raise ValueError(err.format(len(self.recordingDirs)))
 
-    date = _xml_fetch_element(settingsFile, info, "DATE", "INFO/DATE")
-    machine = _xml_fetch_element(settingsFile, info, "MACHINE", "INFO/MACHINE")
-
-    if session_start_time is None:
         try:
-            session_start_time = datetime.strptime(date.text, "%d %b %Y %H:%M:%S")
-        except ValueError:
-            msg = "settings.xml: recording date in unexpected format: '{}' " +\
-                "Please provide session start time manually (via keyword session_start_time)"
-            raise ValueError(msg.format(date.text))
-    else:
-        pass # parse session_start_time
+            self.root = ET.parse(self.settingsFile).getroot()
+        except Exception as exc:
+            err = "Cannot read {}, original error message: {}"
+            raise ET.ParseError(err.format(self.settingsFile, str(exc)))
 
-    if session_id is None:
-        session_id = blake2b(str(session_start_time).encode(), digest_size=16).hexdigest()
-    else:
-        pass # parse session_id
+        self.date = self.xml_get("INFO/DATE")
+        self.machine = self.xml_get("INFO/MACHINE")
 
-    if experimenter is None:
-        experimenter = machine.text
-    else:
-        pass # parse experimenter
+        if self.session_start_time is None:
+            try:
+                self.session_start_time = datetime.strptime(self.date, "%d %b %Y %H:%M:%S")
+            except ValueError:
+                msg = "{xmlfile}: recording date in unexpected format: '{datestr}' " +\
+                    "Please provide session start time manually (via keyword session_start_time)"
+                raise ValueError(msg.format(xmlfile=self.settingsFile, datestr=self.date))
 
-    if machine.text.startswith("ESI-"):
-        if institution is None:
-            institution = "Ernst Strüngmann Institute (ESI) for Neuroscience " +\
-                "in Cooperation with Max Planck Society"
-        if lab is None:
-            lab = machine.text.lower().split("esi-")[1][2:5].upper() # get ESI lab code HSV, LAU, FRI etc.
+        if self.identifier is None:
+            self.identifier = str(uuid.uuid4())
 
-    if institution is not None:
-        pass # parse institution
+        if self.experimenter is None:
+            self.experimenter = self.machine
 
-    if lab is not None:
-        pass # parse lab
+        if self.machine.lower().startswith("esi-"):
+            if self.institution is None:
+                self.institution = "Ernst Strüngmann Institute (ESI) for Neuroscience " +\
+                    "in Cooperation with Max Planck Society"
+            if self.lab is None:
+                self.lab = self.machine.lower().split("esi-")[1][2:5].upper() # get ESI lab code (HSV, LAU, FRI etc.)
 
-    if not isinstance(experiment_description, str) and experiment_description is not None:
-        raise TypeError("blah")
+        self.xmlChannels = self.get_channel_info()
 
-    # FIXME: put all str/None candidates in list and parse them together
 
+
+
+    def xml_get(self, elemPath):
+        elem = self.root.find(elemPath)
+        if elem is None:
+            xmlErr = "Invalid {} file: missing element {}"
+            raise ValueError(xmlErr.format(self.settingsFile, elemPath))
+        return elem.text
+
+    def get_channel_info(self):
+
+        # Abuse `xml_get` to see if element exists
+        self.xml_get("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
+
+        # If we made it here, the xml file contains channel info, now get it
+        chanInfo = self.root.find("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
+        chanList = []
+        for chan in chanInfo.iter("CHANNEL"):
+            chanList.append(chan)
+
+        return chanList
+
+    def process_json(self, recDir):
+
+        recFile = os.path.join(recDir, self.jsonFile)
+        if not os.path.isfile(recFile):
+            err = "Missing OpenEphys json metadata file {json} for recording {rec}"
+            raise IOError(err.format(json=self.jsonFile, rec=recDir))
+        recJson = json.load(open(recFile, "r"))
+
+
+@validate_arguments
+def export2nwb(data_dir : str,
+               identifier : Optional[str] = None,
+               session_id : Optional[str] = None,
+               session_start_time : Optional[datetime] = None,
+               experimenter : Optional[str] = None,
+               lab : Optional[str] = None,
+               institution : Optional[str] = None,
+               experiment_description : Optional[str] = None) -> None:
+
+    eInfo = EphysInfo(data_dir, session_start_time)
 
     import ipdb; ipdb.set_trace()
 
-    return root
+    for recDir in eInfo.recordingDirs:
+        recJson = eInfo.process_json(recDir)
+
+
 
     import ipdb; ipdb.set_trace()
 
@@ -109,18 +171,11 @@ def export2nwb(recording_dir, session_id=None, session_start_time=None,
     #                 experiment_description='I went on an adventure with thirteen dwarves to reclaim vast treasures.',
     #                 session_id='LONELYMTN' --> recording1)
 
-def _xml_fetch_element(settingsFile, rootElem, elemName, elemPath):
-
-    xmlErr = "Invalid {} file: missing element {}"
-    elem = rootElem.find(elemName)
-    if elem is None:
-        raise ValueError(xmlErr.format(settingsFile, elemPath))
-    return elem
 
 
 if __name__ == "__main__":
 
     # Test stuff within here...
-    recDir = "testrecording_2021-11-09_17-06-14"
+    dataDir = "testrecording_2021-11-09_17-06-14"
 
-    root = export2nwb(recDir)
+    root = export2nwb(dataDir)
