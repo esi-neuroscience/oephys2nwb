@@ -32,9 +32,12 @@ class EphysInfo:
     root : ET.Element = field(init=False)
     info : str = field(init=False)
     machine : str = field(init=False)
+    device : str = field(init=False)
     experimentDir : str = field(init=False)
     recordingDirs : List = field(init=False)
-    xmlChannels : List = field(init=False)
+    xmlRecChannels : List = field(init=False)
+    xmlEvtChannels : List = field(init=False)
+    sampleRate : float = field(default=None, init=False)
 
     # lon: float = 0.0
     # lat: float = 0.0
@@ -80,11 +83,16 @@ class EphysInfo:
         try:
             self.root = ET.parse(self.settingsFile).getroot()
         except Exception as exc:
-            err = "Cannot read {}, original error message: {}"
+            err = "Cannot parse {}, original error message: {}"
             raise ET.ParseError(err.format(self.settingsFile, str(exc)))
 
-        self.date = self.xml_get("INFO/DATE")
-        self.machine = self.xml_get("INFO/MACHINE")
+        self.date = self.xml_get("INFO/DATE").text
+        self.machine = self.xml_get("INFO/MACHINE").text
+
+        self.device = self.xml_get("SIGNALCHAIN/PROCESSOR").get("name")
+        if self.device is None:
+            err = "Invalid {} file: empty tag in element SIGNALCHAIN/PROCESSOR"
+            raise ValueError(err.format(self.settingsFile))
 
         if self.session_start_time is None:
             try:
@@ -107,38 +115,147 @@ class EphysInfo:
             if self.lab is None:
                 self.lab = self.machine.lower().split("esi-")[1][2:5].upper() # get ESI lab code (HSV, LAU, FRI etc.)
 
-        self.xmlChannels = self.get_channel_info()
+        self.xmlRecChannels = self.get_rec_channel_info()
 
-
-
+        self.xmlEvtChannels = self.get_evt_channel_info()
 
     def xml_get(self, elemPath):
         elem = self.root.find(elemPath)
         if elem is None:
             xmlErr = "Invalid {} file: missing element {}"
             raise ValueError(xmlErr.format(self.settingsFile, elemPath))
-        return elem.text
+        return elem
 
-    def get_channel_info(self):
+    def get_rec_channel_info(self):
 
-        # Abuse `xml_get` to see if element exists
-        self.xml_get("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
-
-        # If we made it here, the xml file contains channel info, now get it
-        chanInfo = self.root.find("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
+        # Get XML element and fetch channels
+        chanInfo = self.xml_get("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
         chanList = []
         for chan in chanInfo.iter("CHANNEL"):
+
+            # Assign each channel to a group by creating a new XML tag
+            chanName = chan.get("name")
+            if chanName is None or chan.get("number") is None:
+                err = "Invalid channel specification in {}"
+                raise ValueError(err.format(self.settingsFile))
+            if chanName.startswith("ADC"):
+                chan.set("group", "ADC")
+            else:
+                chanParts = chanName.split("_")
+                if len(chanParts) == 3:
+                    chan.set("group", chanParts[1])
+                else:
+                    chan.set("group", "CH")
             chanList.append(chan)
+
+        # Abort if no valid channels were found
+        if len(chanList) == 0:
+            err = "Found no valid channels in {} file"
+            raise ValueError(err.format(self.settingsFile))
 
         return chanList
 
-    def process_json(self, recDir):
+    def get_evt_channel_info(self):
 
-        recFile = os.path.join(recDir, self.jsonFile)
-        if not os.path.isfile(recFile):
-            err = "Missing OpenEphys json metadata file {json} for recording {rec}"
-            raise IOError(err.format(json=self.jsonFile, rec=recDir))
-        recJson = json.load(open(recFile, "r"))
+        # Get XML element and fetch channels
+        editor = self.xml_get("SIGNALCHAIN/PROCESSOR/EDITOR")
+        chanList = []
+        for chan in editor.iter("EVENT_CHANNEL"):
+
+            # Assign each channel to a group by creating a new XML tag
+            chanName = chan.get("Name")
+            if chanName is None or chan.get("Channel") is None:
+                err = "Invalid event channel specification in {}"
+                raise ValueError(err.format(self.settingsFile))
+            if chanName.startswith("TTL"):
+                chan.set("group", "TTL")
+            else:
+                chan.set("group", "EVT")
+            chanList.append(chan)
+
+        # Abort if no valid channels were found
+        if len(chanList) == 0:
+            err = "Found no valid event channels in {} file"
+            raise ValueError(err.format(self.settingsFile))
+
+        return chanList
+
+
+    def process_json(self):
+
+        for recDir in self.recordingDirs:
+
+            recJson = os.path.join(recDir, self.jsonFile)
+            if not os.path.isfile(recJson):
+                err = "Missing OpenEphys json metadata file {json} for recording {rec}"
+                raise IOError(err.format(json=self.jsonFile, rec=recDir))
+            with open(recJson, "r") as rj:
+                recInfo = json.load(rj)
+
+            continuous = self.dict_get(recJson, recInfo, "continuous")
+            if len(continuous) != 1:
+                err = "Unexpected format of field continuous in JSON file {}"
+                raise ValueError(err.format(recJson))
+            continuous = continuous[0]
+
+            nChannels = self.dict_get(recJson, continuous, "num_channels")
+            if nChannels != len(self.xmlRecChannels):
+                err = "Channel mismatch between {} and {}"
+                raise ValueError(err.format(self.settingsFile, recJson))
+
+            device = self.dict_get(recJson, continuous, "source_processor_name")
+            if not (device in self.device or self.device in device):
+                err = "Recording device mismatch between {} and {}"
+                raise ValueError(err.format(self.settingsFile, recJson))
+
+            srate = self.dict_get(recJson, continuous, "sample_rate")
+            if self.sampleRate is not None:
+                if srate != self.sampleRate:
+                    err = "Unsupported: more than one sample-rate in JSON file {}"
+                    raise ValueError(err.format(recJson))
+            else:
+                self.sampleRate = srate
+
+            channels = self.dict_get(recJson, continuous, "channels")
+            for ck, chan in enumerate(self.xmlRecChannels):
+                jsonChan = channels[ck]
+                name = self.dict_get(recJson, jsonChan, "channel_name")
+                sourceIdx = self.dict_get(recJson, jsonChan, "source_processor_index")
+                recIdx = self.dict_get(recJson, jsonChan, "recorded_processor_index")
+                units = self.dict_get(recJson, jsonChan, "units")
+                xmlIdx = int(chan.get("number"))
+                if name != chan.get("name"):
+                    err = "Recording channel name mismatch in JSON file {}: expected {} found {}"
+                    raise ValueError(err.format(recJson, chan.get("name"), name))
+                if sourceIdx != xmlIdx and recIdx != xmlIdx:
+                    err = "Recording channel index mismatch in JSON file {}: expected {} found {} or {}"
+                    raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
+                chan.set("units", units)
+
+            events = self.dict_get(recJson, recInfo, "events")
+            for event in events:
+                desc = self.dict_get(recJson, event, "description")
+                if "TTL Events" in desc:
+                    if not all(chan.get("Name").startswith("TTL") for chan in self.xmlEvtChannels):
+                        err = "Event channel mismatch in JSON file {}"
+                        raise ValueError(err.format(recJson))
+                    nChannels = self.dict_get(recJson, event, "num_channels")
+                    if nChannels != len(self.xmlEvtChannels):
+                        err = "Event channel mismatch between {} and {}"
+                        raise ValueError(err.format(self.settingsFile, recJson))
+                srate = self.dict_get(recJson, event, "sample_rate")
+                if srate != self.sampleRate:
+                    err = "Unsupported: more than one sample-rate in JSON file {}"
+                    raise ValueError(err.format(recJson))
+
+
+    def dict_get(self, recJson, dict, key):
+        value = dict.get(key)
+        if value is None:
+            err = "Missing expected field {} in JSON file {}"
+            raise ValueError(err.format(key, recJson))
+        return value
+
 
 
 @validate_arguments
@@ -155,12 +272,6 @@ def export2nwb(data_dir : str,
 
     import ipdb; ipdb.set_trace()
 
-    for recDir in eInfo.recordingDirs:
-        recJson = eInfo.process_json(recDir)
-
-
-
-    import ipdb; ipdb.set_trace()
 
     # session_description, identifier, session_start_time
 
