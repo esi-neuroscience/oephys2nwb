@@ -7,18 +7,21 @@ import os
 import xml.etree.ElementTree as ET
 import uuid
 import json
+import numpy as np
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
 from pynwb import NWBFile
-
+from pynwb.ecephys import ElectricalSeries
+from open_ephys.analysis import Session
 
 @dataclass
 class EphysInfo:
 
     data_dir : str
+    session_description : Optional[str] = None
     identifier : Optional[str] = None
     session_id : Optional[str] = None
     session_start_time : Optional[datetime] = None
@@ -30,17 +33,17 @@ class EphysInfo:
     settingsFile : str = field(default="settings.xml", init=False)
     jsonFile : str = field(default="structure.oebin")
     root : ET.Element = field(init=False)
-    info : str = field(init=False)
     machine : str = field(init=False)
     device : str = field(init=False)
     experimentDir : str = field(init=False)
     recordingDirs : List = field(init=False)
     xmlRecChannels : List = field(init=False)
+    xmlRecGroups : List = field(init=False)
     xmlEvtChannels : List = field(init=False)
+    xmlEvtGroups : List = field(init=False)
     sampleRate : float = field(default=None, init=False)
-
-    # lon: float = 0.0
-    # lat: float = 0.0
+    recChannelUnit : str = field(default=None, init=False)
+    recChannelUnitConversion : Dict = field(default={"uV" : 1e-6, "mV" : 1e-3}, init=False)
 
     def __post_init__(self):
 
@@ -48,6 +51,9 @@ class EphysInfo:
         if not os.path.isdir(self.data_dir):
             err = "Provided path {} does not point to an existing directory"
             raise IOError(err.format(self.data_dir))
+
+        if self.session_description is None:
+            self.session_description = os.path.basename(self.data_dir)
 
         self.process_xml()
 
@@ -89,10 +95,11 @@ class EphysInfo:
         self.date = self.xml_get("INFO/DATE").text
         self.machine = self.xml_get("INFO/MACHINE").text
 
-        self.device = self.xml_get("SIGNALCHAIN/PROCESSOR").get("name")
-        if self.device is None:
+        device = self.xml_get("SIGNALCHAIN/PROCESSOR").get("name")
+        if device is None:
             err = "Invalid {} file: empty tag in element SIGNALCHAIN/PROCESSOR"
             raise ValueError(err.format(self.settingsFile))
+        self.device = device.replace("Sources/", "")
 
         if self.session_start_time is None:
             try:
@@ -115,9 +122,13 @@ class EphysInfo:
             if self.lab is None:
                 self.lab = self.machine.lower().split("esi-")[1][2:5].upper() # get ESI lab code (HSV, LAU, FRI etc.)
 
-        self.xmlRecChannels = self.get_rec_channel_info()
+        channels, groups = self.get_rec_channel_info()
+        self.xmlRecChannels = list(channels)
+        self.xmlRecGroups = list(groups)
 
-        self.xmlEvtChannels = self.get_evt_channel_info()
+        channels, groups = self.get_evt_channel_info()
+        self.xmlEvtChannels = list(channels)
+        self.xmlEvtGroups = list(groups)
 
     def xml_get(self, elemPath):
         elem = self.root.find(elemPath)
@@ -131,6 +142,7 @@ class EphysInfo:
         # Get XML element and fetch channels
         chanInfo = self.xml_get("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
         chanList = []
+        chanGroups = []
         for chan in chanInfo.iter("CHANNEL"):
 
             # Assign each channel to a group by creating a new XML tag
@@ -147,19 +159,21 @@ class EphysInfo:
                 else:
                     chan.set("group", "CH")
             chanList.append(chan)
+            chanGroups.append(chan.get("group"))
 
         # Abort if no valid channels were found
         if len(chanList) == 0:
             err = "Found no valid channels in {} file"
             raise ValueError(err.format(self.settingsFile))
 
-        return chanList
+        return chanList, list(set(chanGroups))
 
     def get_evt_channel_info(self):
 
         # Get XML element and fetch channels
         editor = self.xml_get("SIGNALCHAIN/PROCESSOR/EDITOR")
         chanList = []
+        chanGroups = []
         for chan in editor.iter("EVENT_CHANNEL"):
 
             # Assign each channel to a group by creating a new XML tag
@@ -172,13 +186,14 @@ class EphysInfo:
             else:
                 chan.set("group", "EVT")
             chanList.append(chan)
+            chanGroups.append(chan.get("group"))
 
         # Abort if no valid channels were found
         if len(chanList) == 0:
             err = "Found no valid event channels in {} file"
             raise ValueError(err.format(self.settingsFile))
 
-        return chanList
+        return chanList, list(set(chanGroups))
 
 
     def process_json(self):
@@ -232,6 +247,20 @@ class EphysInfo:
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
 
+            chanUnits = set(chan.get("units") for chan in self.xmlRecChannels)
+            if len(chanUnits) > 1:
+                err = "Non-unique recording channel units in JSON file {}: found {}"
+                raise ValueError(err.format(recJson, chanUnits))
+            if self.recChannelUnit is not None:
+                if chanUnits[0] != self.recChannelUnit:
+                    err = "Unsupported: mixed recording channel units in JSON file {}. Found {} and {}"
+                    raise ValueError(err.format(recJson, chanUnits[0], self.recChannelUnit))
+            else:
+                if chanUnits[0] not in self.recChannelUnitConversion.keys():
+                    err = "Invalid unit {} in JSON file {}; supported voltage units are {}"
+                    raise ValueError(err.format(chanUnits[0], recJson, list(self.recChannelUnitConversion.keys())))
+                self.recChannelUnit = chanUnits[0]
+
             events = self.dict_get(recJson, recInfo, "events")
             for event in events:
                 desc = self.dict_get(recJson, event, "description")
@@ -260,6 +289,7 @@ class EphysInfo:
 
 @validate_arguments
 def export2nwb(data_dir : str,
+               session_description : Optional[str] = None,
                identifier : Optional[str] = None,
                session_id : Optional[str] = None,
                session_start_time : Optional[datetime] = None,
@@ -268,9 +298,94 @@ def export2nwb(data_dir : str,
                institution : Optional[str] = None,
                experiment_description : Optional[str] = None) -> None:
 
-    eInfo = EphysInfo(data_dir, session_start_time)
+    eInfo = EphysInfo(data_dir,
+                      session_description=session_description,
+                      identifier=identifier,
+                      session_id=session_id,
+                      session_start_time=session_start_time,
+                      experimenter=experimenter,
+                      lab=lab,
+                      institution=institution,
+                      experiment_description=experiment_description)
 
+    nRecChannels = len(eInfo.xmlRecChannels)
+
+    session = Session(data_dir)
+
+    # Use collected info to create NWBFile instance
+    for rk, recDir in enumerate(eInfo.recordingDirs):
+
+        if eInfo.session_id is None:
+            session_id = os.path.basename(recDir)
+        else:
+            session_id = eInfo.session_id
+
+        nwbfile = NWBFile(eInfo.session_description,
+                          eInfo.identifier,
+                          eInfo.session_start_time,
+                          experimenter=eInfo.experimenter,
+                          lab=eInfo.lab,
+                          institution=eInfo.institution,
+                          experiment_description=eInfo.experiment_description,
+                          session_id=session_id)
+
+        device = nwbfile.create_device(eInfo.device)
+
+        rec = session.recordnodes[0].recordings[rk]
+
+        data = rec.continuous[0].samples
+        if nRecChannels not in data.shape:
+            err = "Binary data has shape {} which does not match expected number of channels {}"
+            raise ValueError(err.format(data.shape, nRecChannels))
+        if data.shape[1] != nRecChannels:
+            data = data.T
+        chanGains = np.array([float(chan.get("gain")) for chan in eInfo.xmlRecChannels]).reshape(1, nRecChannels)
+
+        for groupName in eInfo.xmlRecGroups:
+            chanDesc = "OpenEphys {} channels".format(groupName)
+            channels = [(int(chan.get("number")), chan.get("name")) for chan in eInfo.xmlRecChannels if chan.get("group") == groupName]
+            elecGroup = nwbfile.create_electrode_group(name=groupName,
+                                                       description=chanDesc,
+                                                       location="",
+                                                       device=device)
+            for chanIdx, chanName in channels:
+                nwbfile.add_electrode(id=chanIdx,
+                                      location=chanName,
+                                      group=elecGroup,
+                                      imp=1.0,
+                                      filtering="None",
+                                      x=0.0, y=0.0, z=0.0)
+
+            elecIdxs = list(zip(*channels))[0]
+
+            elecRegion = nwbfile.create_electrode_table_region(elecIdxs, chanDesc)
+
+            elecData = ElectricalSeries(chanDesc,
+                                        data[:, elecIdxs],
+                                        elecRegion,
+                                        channel_conversion=chanGains,
+                                        conversion=eInfo.recChannelUnitConversion[eInfo.recChannelUnit],
+                                        filtering=None, resolution=-1.0, conversion=1.0, timestamps=None, starting_time=None, rate=None, comments='no comments', description='no description', control=None, control_description=None)'
+
+            nwbfile.add_acquisition(elecData)
+
+            import ipdb; ipdb.set_trace()
+
+
+
+    # session = Session(data_dir)
+    chans = session.recordnodes[0].recordings[0].continuous[0].samples
+    tpoins = chans = session.recordnodes[0].recordings[0].continuous[0].timestamps
+    print(session.recordnodes[0].recordings[0].continuous[0].metadata)
     import ipdb; ipdb.set_trace()
+
+
+
+        # if dtype == float: # Convert data to float array and convert bits to voltage.
+        #     data = np.fromfile(f,np.dtype('>i2'),N) * float(header['bitVolts']) # big-endian 16-bit signed integer, multiplied by bitVolts
+        # else:  # Keep data in signed 16 bit integer format.
+        #     data = np.fromfile(f,np.dtype('>i2'),N)  # big-endian 16-bit signed integer
+        # samples[indices[recordNumber]:indices[recordNumber+1]] = data
 
 
     # session_description, identifier, session_start_time
