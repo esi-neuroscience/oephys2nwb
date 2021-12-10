@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Script for exporting binary open ephys data to NWB 2.x
+# Script for exporting binary OpenEphys data to NWB 2.x
 #
 
 import os
@@ -13,9 +13,14 @@ from typing import Optional, List, Dict
 from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
-from pynwb import NWBFile
+from pynwb import NWBFile, TimeSeries
 from pynwb.ecephys import ElectricalSeries
 from open_ephys.analysis import Session
+
+MEMTHRESH = 4
+
+def _unitConversionMapping():
+    return {"uV" : 1e-6, "mV" : 1e-3}
 
 @dataclass
 class EphysInfo:
@@ -43,7 +48,7 @@ class EphysInfo:
     xmlEvtGroups : List = field(init=False)
     sampleRate : float = field(default=None, init=False)
     recChannelUnit : str = field(default=None, init=False)
-    recChannelUnitConversion : Dict = field(default={"uV" : 1e-6, "mV" : 1e-3}, init=False)
+    recChannelUnitConversion : Dict = field(default_factory=_unitConversionMapping, init=False)
 
     def __post_init__(self):
 
@@ -229,7 +234,9 @@ class EphysInfo:
                     err = "Unsupported: more than one sample-rate in JSON file {}"
                     raise ValueError(err.format(recJson))
             else:
-                self.sampleRate = srate
+                self.sampleRate = float(srate)
+
+            # FIXME: inconsistent voltage scaling https://github.com/open-ephys/plugin-GUI/issues/472
 
             channels = self.dict_get(recJson, continuous, "channels")
             for ck, chan in enumerate(self.xmlRecChannels):
@@ -247,7 +254,7 @@ class EphysInfo:
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
 
-            chanUnits = set(chan.get("units") for chan in self.xmlRecChannels)
+            chanUnits = list(set(chan.get("units") for chan in self.xmlRecChannels))
             if len(chanUnits) > 1:
                 err = "Non-unique recording channel units in JSON file {}: found {}"
                 raise ValueError(err.format(recJson, chanUnits))
@@ -332,22 +339,28 @@ def export2nwb(data_dir : str,
         device = nwbfile.create_device(eInfo.device)
 
         rec = session.recordnodes[0].recordings[rk]
-
         data = rec.continuous[0].samples
+        timeStamps = rec.continuous[0].timestamps
+
         if nRecChannels not in data.shape:
             err = "Binary data has shape {} which does not match expected number of channels {}"
             raise ValueError(err.format(data.shape, nRecChannels))
         if data.shape[1] != nRecChannels:
             data = data.T
-        chanGains = np.array([float(chan.get("gain")) for chan in eInfo.xmlRecChannels]).reshape(1, nRecChannels)
+        chanGains = np.array([float(chan.get("gain")) for chan in eInfo.xmlRecChannels])
+
+        esCounter = 1
+        tsCounter = 1
 
         for groupName in eInfo.xmlRecGroups:
+
             chanDesc = "OpenEphys {} channels".format(groupName)
             channels = [(int(chan.get("number")), chan.get("name")) for chan in eInfo.xmlRecChannels if chan.get("group") == groupName]
             elecGroup = nwbfile.create_electrode_group(name=groupName,
                                                        description=chanDesc,
                                                        location="",
                                                        device=device)
+
             for chanIdx, chanName in channels:
                 nwbfile.add_electrode(id=chanIdx,
                                       location=chanName,
@@ -356,20 +369,45 @@ def export2nwb(data_dir : str,
                                       filtering="None",
                                       x=0.0, y=0.0, z=0.0)
 
+            # FIXME: elecRegion not correct if channels start w/ADC...
             elecIdxs = list(zip(*channels))[0]
+            elecRegion = nwbfile.create_electrode_table_region(list(range(len(elecIdxs))), chanDesc)
 
-            elecRegion = nwbfile.create_electrode_table_region(elecIdxs, chanDesc)
 
-            elecData = ElectricalSeries(chanDesc,
-                                        data[:, elecIdxs],
-                                        elecRegion,
-                                        channel_conversion=chanGains,
-                                        conversion=eInfo.recChannelUnitConversion[eInfo.recChannelUnit],
-                                        filtering=None, resolution=-1.0, conversion=1.0, timestamps=None, starting_time=None, rate=None, comments='no comments', description='no description', control=None, control_description=None)'
+            # Use default name of NWB object to increase chances that 3rd party
+            # tools operate seamlessly with it; also use `rate` instead of storing
+            # timestamps to ensure tools relying on constant sampling rate work
+            # FIXME: Memory efficient writing
+            # https://pynwb.readthedocs.io/en/stable/tutorials/advanced_io/iterative_write.html#example-convert-large-binary-data-arrays
+            if groupName != "ADC":
+                elecData = ElectricalSeries(name="ElectricalSeries_{}".format(esCounter),
+                                            data=data[:, elecIdxs],
+                                            electrodes=elecRegion,
+                                            channel_conversion=chanGains,
+                                            conversion=eInfo.recChannelUnitConversion[eInfo.recChannelUnit],
+                                            starting_time=float(timeStamps[0]),
+                                            rate=eInfo.sampleRate,
+                                            description=chanDesc)
+                nwbfile.add_acquisition(elecData)
+                esCounter += 1
+            # else:
+            #     elecData = TimeSeries(name="TimeSeries_{}".format(tsCounter),
+            #                           data=data[:, elecIdxs],
+            #                           unit=eInfo.recChannelUnit,
+            #                           electrodes=elecRegion,
+            #                           channel_conversion=chanGains,
+            #                           conversion=eInfo.recChannelUnitConversion[eInfo.recChannelUnit],
+            #                           starting_time=float(timeStamps[0]),
+            #                           rate=eInfo.sampleRate,
+            #                           description=chanDesc)
+            #     tsCounter += 1
 
-            nwbfile.add_acquisition(elecData)
+            # nwbfile.add_acquisition(elecData)
 
-            import ipdb; ipdb.set_trace()
+        import ipdb; ipdb.set_trace()
+
+        # perform file validation: https://pynwb.readthedocs.io/en/latest/validation.html
+
 
 
 
