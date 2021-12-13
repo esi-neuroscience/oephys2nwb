@@ -13,14 +13,13 @@ from typing import Optional, List, Dict
 from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
-from pynwb import NWBFile, TimeSeries
+from pynwb import NWBFile
 from pynwb.ecephys import ElectricalSeries
+from ndx_events import TTLs
 from open_ephys.analysis import Session
 
-MEMTHRESH = 4
-
 def _unitConversionMapping():
-    return {"uV" : 1e-6, "mV" : 1e-3}
+    return {"uV" : 1e-6, "mV" : 1e-3, "V" : 1.0}
 
 @dataclass
 class EphysInfo:
@@ -42,12 +41,13 @@ class EphysInfo:
     device : str = field(init=False)
     experimentDir : str = field(init=False)
     recordingDirs : List = field(init=False)
+    eventDirs : List = field(default_factory=lambda : [], init=False)
+    eventDtypes : List = field(default_factory=lambda : [], init=False)
     xmlRecChannels : List = field(init=False)
     xmlRecGroups : List = field(init=False)
     xmlEvtChannels : List = field(init=False)
     xmlEvtGroups : List = field(init=False)
     sampleRate : float = field(default=None, init=False)
-    recChannelUnit : str = field(default=None, init=False)
     recChannelUnitConversion : Dict = field(default_factory=_unitConversionMapping, init=False)
 
     def __post_init__(self):
@@ -236,8 +236,6 @@ class EphysInfo:
             else:
                 self.sampleRate = float(srate)
 
-            # FIXME: inconsistent voltage scaling https://github.com/open-ephys/plugin-GUI/issues/472
-
             channels = self.dict_get(recJson, continuous, "channels")
             for ck, chan in enumerate(self.xmlRecChannels):
                 jsonChan = channels[ck]
@@ -253,20 +251,13 @@ class EphysInfo:
                     err = "Recording channel index mismatch in JSON file {}: expected {} found {} or {}"
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
-
             chanUnits = list(set(chan.get("units") for chan in self.xmlRecChannels))
-            if len(chanUnits) > 1:
-                err = "Non-unique recording channel units in JSON file {}: found {}"
+            if len(chanUnits) > len(self.xmlRecGroups):
+                err = "Found recording channel groups with inconsistent units in JSON file {}: found {}"
                 raise ValueError(err.format(recJson, chanUnits))
-            if self.recChannelUnit is not None:
-                if chanUnits[0] != self.recChannelUnit:
-                    err = "Unsupported: mixed recording channel units in JSON file {}. Found {} and {}"
-                    raise ValueError(err.format(recJson, chanUnits[0], self.recChannelUnit))
-            else:
-                if chanUnits[0] not in self.recChannelUnitConversion.keys():
-                    err = "Invalid unit {} in JSON file {}; supported voltage units are {}"
-                    raise ValueError(err.format(chanUnits[0], recJson, list(self.recChannelUnitConversion.keys())))
-                self.recChannelUnit = chanUnits[0]
+            if any(chanUnit not in self.recChannelUnitConversion.keys() for chanUnit in chanUnits):
+                err = "Invalid units {} in JSON file {}; supported voltage units are {}"
+                raise ValueError(err.format(chanUnits, recJson, list(self.recChannelUnitConversion.keys())))
 
             events = self.dict_get(recJson, recInfo, "events")
             for event in events:
@@ -279,10 +270,25 @@ class EphysInfo:
                     if nChannels != len(self.xmlEvtChannels):
                         err = "Event channel mismatch between {} and {}"
                         raise ValueError(err.format(self.settingsFile, recJson))
+                    eventDir = self.dict_get(recJson, event, "folder_name")
+                    eventDir = os.path.join(recDir, "events", eventDir)
+                    if len(os.listdir(eventDir)) == 0:
+                        err = "No TTL events found in {} given by JSON file {}"
+                        raise IOError(err.format(eventDir, recJson))
+                    if not os.path.isfile(os.path.join(eventDir, "full_words.npy")):
+                        err = "No TTL event markers found in {} given by JSON file {}"
+                        raise IOError(err.format(eventDir, recJson))
+                    self.eventDirs.append(eventDir)
+                    evtDtype = self.dict_get(recJson, event, "type")
+                    self.eventDtypes.append(evtDtype)
                 srate = self.dict_get(recJson, event, "sample_rate")
                 if srate != self.sampleRate:
                     err = "Unsupported: more than one sample-rate in JSON file {}"
                     raise ValueError(err.format(recJson))
+
+            spikes = self.dict_get(recJson, recInfo, "spikes")
+            for spike in spikes:
+                raise NotImplementedError("Spike data is currently not supported")
 
 
     def dict_get(self, recJson, dict, key):
@@ -350,18 +356,19 @@ def export2nwb(data_dir : str,
         chanGains = np.array([float(chan.get("gain")) for chan in eInfo.xmlRecChannels])
 
         esCounter = 1
-        tsCounter = 1
+        elCounter = 0
 
         for groupName in eInfo.xmlRecGroups:
 
             chanDesc = "OpenEphys {} channels".format(groupName)
-            channels = [(int(chan.get("number")), chan.get("name")) for chan in eInfo.xmlRecChannels if chan.get("group") == groupName]
+            xmlChans = [chan for chan in eInfo.xmlRecChannels if chan.get("group") == groupName]
+            chanInfo = [(int(chan.get("number")), chan.get("name")) for chan in xmlChans]
             elecGroup = nwbfile.create_electrode_group(name=groupName,
                                                        description=chanDesc,
                                                        location="",
                                                        device=device)
 
-            for chanIdx, chanName in channels:
+            for chanIdx, chanName in chanInfo:
                 nwbfile.add_electrode(id=chanIdx,
                                       location=chanName,
                                       group=elecGroup,
@@ -369,40 +376,67 @@ def export2nwb(data_dir : str,
                                       filtering="None",
                                       x=0.0, y=0.0, z=0.0)
 
-            # FIXME: elecRegion not correct if channels start w/ADC...
-            elecIdxs = list(zip(*channels))[0]
-            elecRegion = nwbfile.create_electrode_table_region(list(range(len(elecIdxs))), chanDesc)
+            # Fixed
+            elecIdxs = [eInfo.xmlRecChannels.index(chan) for chan in xmlChans]
+            tableIdx = list(range(elCounter, elCounter + len(elecIdxs)))
+            elecRegion = nwbfile.create_electrode_table_region(tableIdx, chanDesc)
+            elCounter += len(elecIdxs)
 
+            # FIXME: this hack is necessary due to inconsistent voltage scaling
+            # (cf. https://github.com/open-ephys/plugin-GUI/issues/472)
+            if groupName == "ADC":
+                chanUnit = "V"
+            else:
+                chanUnit = xmlChans[0].get("units")
 
             # Use default name of NWB object to increase chances that 3rd party
             # tools operate seamlessly with it; also use `rate` instead of storing
             # timestamps to ensure tools relying on constant sampling rate work
             # FIXME: Memory efficient writing
             # https://pynwb.readthedocs.io/en/stable/tutorials/advanced_io/iterative_write.html#example-convert-large-binary-data-arrays
-            if groupName != "ADC":
-                elecData = ElectricalSeries(name="ElectricalSeries_{}".format(esCounter),
-                                            data=data[:, elecIdxs],
-                                            electrodes=elecRegion,
-                                            channel_conversion=chanGains,
-                                            conversion=eInfo.recChannelUnitConversion[eInfo.recChannelUnit],
-                                            starting_time=float(timeStamps[0]),
-                                            rate=eInfo.sampleRate,
-                                            description=chanDesc)
-                nwbfile.add_acquisition(elecData)
-                esCounter += 1
-            # else:
-            #     elecData = TimeSeries(name="TimeSeries_{}".format(tsCounter),
-            #                           data=data[:, elecIdxs],
-            #                           unit=eInfo.recChannelUnit,
-            #                           electrodes=elecRegion,
-            #                           channel_conversion=chanGains,
-            #                           conversion=eInfo.recChannelUnitConversion[eInfo.recChannelUnit],
-            #                           starting_time=float(timeStamps[0]),
-            #                           rate=eInfo.sampleRate,
-            #                           description=chanDesc)
-            #     tsCounter += 1
+            elecData = ElectricalSeries(name="ElectricalSeries_{}".format(esCounter),
+                                        data=data[:, elecIdxs],
+                                        electrodes=elecRegion,
+                                        channel_conversion=chanGains,
+                                        conversion=eInfo.recChannelUnitConversion[chanUnit],
+                                        starting_time=float(timeStamps[0]),
+                                        rate=eInfo.sampleRate,
+                                        description=chanDesc)
+            nwbfile.add_acquisition(elecData)
+            esCounter += 1
 
-            # nwbfile.add_acquisition(elecData)
+        # Events
+        evtPd = session.recordnodes[0].recordings[rk].events
+        evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
+        ts = evtPd.timestamp.to_numpy()
+
+        if eInfo.eventDtypes[rk] == "int16":
+            evt16 = np.zeros((evt.shape[0]), int)
+            for irow in range(evt.shape[0]):
+                evt16[irow] = int(format(evt[irow,1], "08b") + format(evt[irow,0], "08b"), 2)
+            evt = evt16
+
+        for groupName in eInfo.xmlEvtGroups:
+            if groupName == "TTL":
+                if evt.min() < 0:
+                    raise ValueError("Only unsigned integer TTL pulse values are supported. ")
+                evt = evt.astype("uint16")
+                ttlData = TTLs(name="TTL_Pulses",
+                               data=evt,
+                               timestamps=ts,
+                               resolution=1/eInfo.sampleRate,
+                               description="TTL pulse values")
+                nwbfile.add_acquisition(ttlData)
+                ttlChan = TTLs(name="TTL_Channels",
+                               data=evtPd.channel.to_numpy(),
+                               timestamps=ts,
+                               resolution=1/eInfo.sampleRate,
+                               description="TTL pulse channels")
+                nwbfile.add_acquisition(ttlChan)
+            else:
+                raise NotImplementedError("Currently, only TTL pulse events are supported")
+
+        # Spikes currently not supported; caught by `EphysInfo` class in `process_json`
 
         import ipdb; ipdb.set_trace()
 
