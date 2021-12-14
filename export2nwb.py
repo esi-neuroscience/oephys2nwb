@@ -7,16 +7,18 @@ import os
 import xml.etree.ElementTree as ET
 import uuid
 import json
+import subprocess
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
-from pynwb import NWBFile
+from pynwb import NWBFile, NWBHDF5IO
 from pynwb.ecephys import ElectricalSeries
 from ndx_events import TTLs
 from open_ephys.analysis import Session
+
 
 def _unitConversionMapping():
     return {"uV" : 1e-6, "mV" : 1e-3, "V" : 1.0}
@@ -76,7 +78,7 @@ class EphysInfo:
             raise ValueError(err.format(numf=len(xmlFiles), xmlfile=self.settingsFile, folder=self.data_dir))
         self.settingsFile = xmlFiles[0]
 
-        basePath = Path(os.path.split(self.settingsFile)[0])
+        basePath = Path(os.path.dirname(self.settingsFile))
         experimentDirs = [str(entry) for entry in basePath.iterdir() if entry.is_dir()]
         if len(experimentDirs) != 1:
             err = "Found {numf} experiments in {folder}"
@@ -302,6 +304,7 @@ class EphysInfo:
 
 @validate_arguments
 def export2nwb(data_dir : str,
+               output : str,
                session_description : Optional[str] = None,
                identifier : Optional[str] = None,
                session_id : Optional[str] = None,
@@ -320,6 +323,20 @@ def export2nwb(data_dir : str,
                       lab=lab,
                       institution=institution,
                       experiment_description=experiment_description)
+
+    outFile = os.path.abspath(os.path.expanduser(os.path.normpath(output)))
+    if os.path.isfile(outFile):
+        err = "Output file {} already exists"
+        raise IOError(err.format(outFile))
+    outBase, tmp = os.path.split(outFile)
+    outName, outExt = os.path.splitext(tmp)
+    if len(outExt) == 0:
+        outExt = ".nwb"
+
+    if len(eInfo.recordingDirs) > 1:
+        outName += "_recording{}"
+
+
 
     nRecChannels = len(eInfo.xmlRecChannels)
 
@@ -418,17 +435,18 @@ def export2nwb(data_dir : str,
 
         for groupName in eInfo.xmlEvtGroups:
             if groupName == "TTL":
-                if evt.min() < 0:
+                if evt.min() < 0 or evt.max() > np.iinfo("uint16").max:
                     raise ValueError("Only unsigned integer TTL pulse values are supported. ")
-                evt = evt.astype("uint16")
-                ttlData = TTLs(name="TTL_Pulses",
-                               data=evt,
+                ttlData = TTLs(name="TTL_PulseValues",
+                               data=evt.astype("uint16"),
+                               labels=["No labels defined"],
                                timestamps=ts,
                                resolution=1/eInfo.sampleRate,
                                description="TTL pulse values")
                 nwbfile.add_acquisition(ttlData)
-                ttlChan = TTLs(name="TTL_Channels",
+                ttlChan = TTLs(name="TTL_ChannelValues",
                                data=evtPd.channel.to_numpy(),
+                               labels=["No labels defined"],
                                timestamps=ts,
                                resolution=1/eInfo.sampleRate,
                                description="TTL pulse channels")
@@ -438,42 +456,19 @@ def export2nwb(data_dir : str,
 
         # Spikes currently not supported; caught by `EphysInfo` class in `process_json`
 
-        import ipdb; ipdb.set_trace()
+        # Finally, write NWB file to disk
+        outFileName = os.path.join(outBase, outName + outExt).format(rk)
+        with NWBHDF5IO(outFileName, "w") as io:
+            io.write(nwbfile)
 
-        # perform file validation: https://pynwb.readthedocs.io/en/latest/validation.html
-
-
-
-
-    # session = Session(data_dir)
-    chans = session.recordnodes[0].recordings[0].continuous[0].samples
-    tpoins = chans = session.recordnodes[0].recordings[0].continuous[0].timestamps
-    print(session.recordnodes[0].recordings[0].continuous[0].metadata)
-    import ipdb; ipdb.set_trace()
-
-
-
-        # if dtype == float: # Convert data to float array and convert bits to voltage.
-        #     data = np.fromfile(f,np.dtype('>i2'),N) * float(header['bitVolts']) # big-endian 16-bit signed integer, multiplied by bitVolts
-        # else:  # Keep data in signed 16 bit integer format.
-        #     data = np.fromfile(f,np.dtype('>i2'),N)  # big-endian 16-bit signed integer
-        # samples[indices[recordNumber]:indices[recordNumber+1]] = data
-
-
-    # session_description, identifier, session_start_time
-
-    # nwbfile = NWBFile('my first synthetic recording', 'EXAMPLE_ID', 'asdf',
-    #                 experimenter='Dr. Bilbo Baggins',
-    #                 lab='Bag End Laboratory',
-    #                 institution='University of Middle Earth at the Shire',
-    #                 experiment_description='I went on an adventure with thirteen dwarves to reclaim vast treasures.',
-    #                 session_id='LONELYMTN' --> recording1)
-
+        # Perform validation of generated NWB file: https://pynwb.readthedocs.io/en/latest/validation.html
+        subprocess.run(["python", "-m", "pynwb.validate", outFileName], check=True)
 
 
 if __name__ == "__main__":
 
     # Test stuff within here...
     dataDir = "testrecording_2021-11-09_17-06-14"
+    output = "/cs/home/fuertingers/test.nwb"
 
-    root = export2nwb(dataDir)
+    root = export2nwb(dataDir, output)
