@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Script for exporting binary OpenEphys data to NWB 2.x
@@ -9,6 +10,7 @@ import uuid
 import json
 import subprocess
 import numpy as np
+from argparse import ArgumentParser, RawTextHelpFormatter
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from pathlib import Path
@@ -20,12 +22,17 @@ from ndx_events import TTLs
 from open_ephys.analysis import Session
 
 
+# Factory generating default unit-mapping dict for `EphysInfo` class
 def _unitConversionMapping():
     return {"uV" : 1e-6, "mV" : 1e-3, "V" : 1.0}
 
 @dataclass
 class EphysInfo:
+    """
+    Local helper class for parsing OpenEphys XML/JSON meta-data
+    """
 
+    # Quantities the class is instantiated with
     data_dir : str
     session_description : Optional[str] = None
     identifier : Optional[str] = None
@@ -36,6 +43,7 @@ class EphysInfo:
     institution : Optional[str] = None
     experiment_description : Optional[str] = None
 
+    # All other attributes set during `__post_init__`
     settingsFile : str = field(default="settings.xml", init=False)
     jsonFile : str = field(default="structure.oebin")
     root : ET.Element = field(init=False)
@@ -53,6 +61,9 @@ class EphysInfo:
     recChannelUnitConversion : Dict = field(default_factory=_unitConversionMapping, init=False)
 
     def __post_init__(self):
+        """
+        Manager method invoking all required parsing helpers
+        """
 
         self.data_dir = os.path.abspath(os.path.expanduser(os.path.normpath(self.data_dir)))
         if not os.path.isdir(self.data_dir):
@@ -67,6 +78,9 @@ class EphysInfo:
         self.process_json()
 
     def process_xml(self):
+        """
+        Read OpenEphys XML settings file and vet its contents
+        """
 
         xmlFiles = []
         for cur_path, _, files in os.walk(self.data_dir):
@@ -138,6 +152,9 @@ class EphysInfo:
         self.xmlEvtGroups = list(groups)
 
     def xml_get(self, elemPath):
+        """
+        Helper method that (tries to) fetch an element from settings.xml
+        """
         elem = self.root.find(elemPath)
         if elem is None:
             xmlErr = "Invalid {} file: missing element {}"
@@ -145,6 +162,9 @@ class EphysInfo:
         return elem
 
     def get_rec_channel_info(self):
+        """
+        Helper method that fetches/parsers recording channels found in settings.xml
+        """
 
         # Get XML element and fetch channels
         chanInfo = self.xml_get("SIGNALCHAIN/PROCESSOR/CHANNEL_INFO")
@@ -152,7 +172,8 @@ class EphysInfo:
         chanGroups = []
         for chan in chanInfo.iter("CHANNEL"):
 
-            # Assign each channel to a group by creating a new XML tag
+            # Assign each channel to a group by creating a new XML tag: the
+            # default group is "CH"
             chanName = chan.get("name")
             if chanName is None or chan.get("number") is None:
                 err = "Invalid channel specification in {}"
@@ -176,6 +197,9 @@ class EphysInfo:
         return chanList, list(set(chanGroups))
 
     def get_evt_channel_info(self):
+        """
+        Helper method that fetches/parsers event channels found in settings.xml
+        """
 
         # Get XML element and fetch channels
         editor = self.xml_get("SIGNALCHAIN/PROCESSOR/EDITOR")
@@ -183,7 +207,8 @@ class EphysInfo:
         chanGroups = []
         for chan in editor.iter("EVENT_CHANNEL"):
 
-            # Assign each channel to a group by creating a new XML tag
+            # Assign each channel to a group by creating a new XML tag: pay
+            # special attention to TTL channels, default group is "EVT"
             chanName = chan.get("Name")
             if chanName is None or chan.get("Channel") is None:
                 err = "Invalid event channel specification in {}"
@@ -204,9 +229,14 @@ class EphysInfo:
 
 
     def process_json(self):
+        """
+        Helper method that fetches info from OpenEphys JSON file and ensures
+        that contents match up with values obtained from settings.xml
+        """
 
         for recDir in self.recordingDirs:
 
+            # Each recording has its own structure.oebin file
             recJson = os.path.join(recDir, self.jsonFile)
             if not os.path.isfile(recJson):
                 err = "Missing OpenEphys json metadata file {json} for recording {rec}"
@@ -214,6 +244,7 @@ class EphysInfo:
             with open(recJson, "r") as rj:
                 recInfo = json.load(rj)
 
+            # --- CONTINUOUS ---
             continuous = self.dict_get(recJson, recInfo, "continuous")
             if len(continuous) != 1:
                 err = "Unexpected format of field continuous in JSON file {}"
@@ -253,6 +284,8 @@ class EphysInfo:
                     err = "Recording channel index mismatch in JSON file {}: expected {} found {} or {}"
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
+
+            # We allow each recording to have its own unit but no mV/uV mix ups within the same recording
             chanUnits = list(set(chan.get("units") for chan in self.xmlRecChannels))
             if len(chanUnits) > len(self.xmlRecGroups):
                 err = "Found recording channel groups with inconsistent units in JSON file {}: found {}"
@@ -261,6 +294,7 @@ class EphysInfo:
                 err = "Invalid units {} in JSON file {}; supported voltage units are {}"
                 raise ValueError(err.format(chanUnits, recJson, list(self.recChannelUnitConversion.keys())))
 
+            # --- EVENTS ---
             events = self.dict_get(recJson, recInfo, "events")
             for event in events:
                 desc = self.dict_get(recJson, event, "description")
@@ -288,18 +322,20 @@ class EphysInfo:
                     err = "Unsupported: more than one sample-rate in JSON file {}"
                     raise ValueError(err.format(recJson))
 
+            # --- SPIKES ---
             spikes = self.dict_get(recJson, recInfo, "spikes")
             for spike in spikes:
                 raise NotImplementedError("Spike data is currently not supported")
 
-
     def dict_get(self, recJson, dict, key):
+        """
+        Helper method that (tries to) fetch an element from OE JSON file
+        """
         value = dict.get(key)
         if value is None:
             err = "Missing expected field {} in JSON file {}"
             raise ValueError(err.format(key, recJson))
         return value
-
 
 
 @validate_arguments
@@ -313,7 +349,69 @@ def export2nwb(data_dir : str,
                lab : Optional[str] = None,
                institution : Optional[str] = None,
                experiment_description : Optional[str] = None) -> None:
+    """
+    Export binary OpenEphys data to NWB 2.x
 
+    Parameters
+    ----------
+    data_dir : str
+        Name of directory (may include full path) containing OpenEphys binary data
+        (e.g., `"/path/to/recordingDir"`)
+    output : str
+        Name of NWB file (may include full path) to be generated (must not exist).
+        The file-name extension can be chosen freely (e.g., `"/path/to/outputFile.myext"`),
+        if no extension is provided the suffix `'.nwb'` is added (e.g., ``output = "myfile"``
+        generates an NWB container `"myfile.nwb"` in the current directory).
+    session_description : str or None
+        Human readable caption of experimental session (e.g., `"Experiment_1"`).
+        If not provided, the base name of `data_dir` is used.
+    identifier : str or None
+        Unique tag (does not need to be human readable) associated to experimental
+        session (e.g., `"4310-d217-4558-be2f"`). If not provided, a randomly generated
+        unique ID tag is used.
+    session_id : str or None
+        Annotation of recording within session (e.g., `"rec_1"`). If not provided,
+        the base name of the recording folder(s) inside `data_dir` is used.
+        **Note**: A custom value of `session_id` can only be provided if the session
+        in `data_dir` contains exactly one recording.
+    session_start_time : datetime or None
+        Starting time of experimental session (e.g., `"datetime(2021, 11, 9, 17, 6, 14)"`).
+        If not provided, `session_start_time` is read from the session's OpenEphys
+        xml settings file.
+    experimenter : str or None
+        Name of person conducting the experimental session (e.g., `"Whodunnit"`).
+        If not provided, the host name of the recording computer used for the
+        experiment is used.
+    lab : str or None
+        Name of research lab or group that performed the experiment (e.g., `"HilbertSpace"`).
+        If not provided and the experiment was performed at ESI, the associated
+        lab is inferred from the session's OpenEphys xml settings file. Otherwise
+        no default value is assigned.
+    institution : str or None
+        Name of the university/institution where the experiment was performed
+        (e.g., "Hogwarts"). If not provided and the experiment was performed at ESI,
+        then `institution` is set automatically. Otherwise no default value is
+        assigned.
+    experiment_description : str or None
+        Human readable description of experiment (e.g., `"What a great idea that was"`).
+        No default value is assigned if not provided.
+
+    Returns
+    -------
+    Nothing : None
+    """
+
+    # First, ensure target NWB container does not exist yet
+    outFile = os.path.abspath(os.path.expanduser(os.path.normpath(output)))
+    if os.path.isfile(outFile):
+        err = "Output file {} already exists"
+        raise IOError(err.format(outFile))
+    outBase, tmp = os.path.split(outFile)
+    outName, outExt = os.path.splitext(tmp)
+    if len(outExt) == 0:
+        outExt = ".nwb"
+
+    # All remaining error checks (except for basic type matching) is performed by `EphysInfo`
     eInfo = EphysInfo(data_dir,
                       session_description=session_description,
                       identifier=identifier,
@@ -324,25 +422,13 @@ def export2nwb(data_dir : str,
                       institution=institution,
                       experiment_description=experiment_description)
 
-    outFile = os.path.abspath(os.path.expanduser(os.path.normpath(output)))
-    if os.path.isfile(outFile):
-        err = "Output file {} already exists"
-        raise IOError(err.format(outFile))
-    outBase, tmp = os.path.split(outFile)
-    outName, outExt = os.path.splitext(tmp)
-    if len(outExt) == 0:
-        outExt = ".nwb"
-
+    # If `data_dir` contains multiple recordings, prepare base-name of NWB containers
     if len(eInfo.recordingDirs) > 1:
         outName += "_recording{}"
 
-
-
-    nRecChannels = len(eInfo.xmlRecChannels)
-
-    session = Session(data_dir)
-
     # Use collected info to create NWBFile instance
+    nRecChannels = len(eInfo.xmlRecChannels)
+    session = Session(data_dir)
     for rk, recDir in enumerate(eInfo.recordingDirs):
 
         if eInfo.session_id is None:
@@ -365,6 +451,7 @@ def export2nwb(data_dir : str,
         data = rec.continuous[0].samples
         timeStamps = rec.continuous[0].timestamps
 
+        # This should never happen: expected no. of recording channels does not match data shape...
         if nRecChannels not in data.shape:
             err = "Binary data has shape {} which does not match expected number of channels {}"
             raise ValueError(err.format(data.shape, nRecChannels))
@@ -372,11 +459,12 @@ def export2nwb(data_dir : str,
             data = data.T
         chanGains = np.array([float(chan.get("gain")) for chan in eInfo.xmlRecChannels])
 
+        # Create separate `ElectricalSeries` objects for each recording channel group
         esCounter = 1
         elCounter = 0
-
         for groupName in eInfo.xmlRecGroups:
 
+            # Every channel group is mapped onto an `electrode_group`
             chanDesc = "OpenEphys {} channels".format(groupName)
             xmlChans = [chan for chan in eInfo.xmlRecChannels if chan.get("group") == groupName]
             chanInfo = [(int(chan.get("number")), chan.get("name")) for chan in xmlChans]
@@ -385,6 +473,8 @@ def export2nwb(data_dir : str,
                                                        location="",
                                                        device=device)
 
+            # Each channel is considered an "electrode" so that channel-names
+            # are preserved in the NWB container
             for chanIdx, chanName in chanInfo:
                 nwbfile.add_electrode(id=chanIdx,
                                       location=chanName,
@@ -393,7 +483,10 @@ def export2nwb(data_dir : str,
                                       filtering="None",
                                       x=0.0, y=0.0, z=0.0)
 
-            # Fixed
+            # An NWB `ElectricalSeries` requires a dynamic electrode table to keep
+            # track of signal sources. In our case, the table region is the entire
+            # electrode_group; perform some index gymnastics to map the table correctly
+            # onto the list of all electrodes
             elecIdxs = [eInfo.xmlRecChannels.index(chan) for chan in xmlChans]
             tableIdx = list(range(elCounter, elCounter + len(elecIdxs)))
             elecRegion = nwbfile.create_electrode_table_region(tableIdx, chanDesc)
@@ -422,17 +515,19 @@ def export2nwb(data_dir : str,
             nwbfile.add_acquisition(elecData)
             esCounter += 1
 
-        # Events
+        # Get OE event data;
         evtPd = session.recordnodes[0].recordings[rk].events
         evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
         ts = evtPd.timestamp.to_numpy()
 
+        # If 16bit event-markers are used, combine 2 full words
         if eInfo.eventDtypes[rk] == "int16":
             evt16 = np.zeros((evt.shape[0]), int)
             for irow in range(evt.shape[0]):
                 evt16[irow] = int(format(evt[irow,1], "08b") + format(evt[irow,0], "08b"), 2)
             evt = evt16
 
+        # Same as above: each event channel group makes up its own NWB-data entity
         for groupName in eInfo.xmlEvtGroups:
             if groupName == "TTL":
                 if evt.min() < 0 or evt.max() > np.iinfo("uint16").max:
@@ -464,11 +559,104 @@ def export2nwb(data_dir : str,
         # Perform validation of generated NWB file: https://pynwb.readthedocs.io/en/latest/validation.html
         subprocess.run(["python", "-m", "pynwb.validate", outFileName], check=True)
 
+        return
 
+
+# Run as script from command line
 if __name__ == "__main__":
 
-    # Test stuff within here...
-    dataDir = "testrecording_2021-11-09_17-06-14"
-    output = "/cs/home/fuertingers/test.nwb"
+    # # Test stuff within here...
+    # dataDir = "testrecording_2021-11-09_17-06-14"
+    # output = "/cs/home/fuertingers/test.nwb"
+    # export2nwb(dataDir, output)
 
-    root = export2nwb(dataDir, output)
+    # Short description of the program
+    desc = "Export binary OpenEphys data to NWB 2.0"
+    docu = \
+    """
+    Detailed usage instructions
+
+    This script can be either used from the command line or imported in
+    Python.
+
+    Command line use:
+
+        export2nwb -i /path/to/recordingDir -o /path/to/outputFile.nwb
+
+        Optional arguments (like experimenter or lab) are either inferred from
+        OpenEphys meta data or can be provided via corresponding optional
+        arguments (e.g., --experimenter "Whodunnit")
+
+    Python module use:
+
+        from export2nwb import export2nwb
+
+        input = "/path/to/recordingDir"
+        output = "/path/to/outputFile.nwb"
+
+        export2nwb(input, output)
+
+    More details can be found in the project README and the Python docstrings.
+    """
+
+    # Initialize parser with description and detailed help text
+    parser = ArgumentParser(description=desc,
+                            epilog=docu,
+                            formatter_class=RawTextHelpFormatter)
+
+    # Two "mandatory" args (make them optional so that call w/o args shows help)
+    parser.add_argument("-i", "--input",
+                        action="store", type=str, dest="data_dir", default=None,
+                        help="(path to) directory containing OpenEphys binary data")
+    parser.add_argument("-o", "--output",
+                        action="store", type=str, dest="output", default=None,
+                        help="(path to) NWB file to be generated (must not exist)")
+
+    # Now the "real" optional stuff
+    parser.add_argument("--session_description",
+                        action="store", type=str, dest="session_description", default=None,
+                        help="human readable caption of experimental session " +\
+                            "(default: base name of input directory)")
+    parser.add_argument("--identifier",
+                        action="store", type=str, dest="identifier", default=None,
+                        help="unique tag associated to experimental session " +\
+                            "(default: randomly generated unique ID tag)")
+    parser.add_argument("--session_id",
+                        action="store", type=str, dest="session_id", default=None,
+                        help="annotation associated to recording within session "+\
+                            "(default: base name of recording directory)")
+    parser.add_argument("--session_start_time",
+                        action="store", type=str, dest="session_start_time", default=None,
+                        help="starting time of session in format D MON YYYY HH:MM:SS, " +\
+                            "e.g., 9 Nov 2021 17:06:14 (default: inferred from OpenEphys xml settings file)")
+    parser.add_argument("--experimenter",
+                        action="store", type=str, dest="experimenter", default=None,
+                        help="name of experimenter (default: host name of recording computer)")
+    parser.add_argument("--lab",
+                        action="store", type=str, dest="lab", default=None,
+                        help="lab/research group that performed experiment " +\
+                            "(default: inferred if recorded at ESI otherwise None)")
+    parser.add_argument("--institution",
+                        action="store", type=str, dest="institution", default=None,
+                        help="institution where experiment was performed" +\
+                            "(default: inferred if recorded at ESI otherwise None)")
+    parser.add_argument("--experiment_description",
+                        action="store", type=str, dest="experiment_description", default=None,
+                        help="human readable description of experiment (default: None)")
+
+    # Parse CL-arguments, if all is well, call respective method
+    args_dict = vars(parser.parse_args())
+    if args_dict["data_dir"] is None:
+        parser.print_help()
+    else:
+        if args_dict["session_start_time"] is not None:
+            timeStr = args_dict["session_start_time"]
+            try:
+                timeDt = datetime.strptime(timeStr, "%d %b %Y %H:%M:%S")
+            except ValueError:
+                msg = "Invalid format of recording time: '{datestr}' " +\
+                    "Please provide start time in format D MON YYYY HH:MM:SS " +\
+                    "(e.g., 9 Nov 2021 17:06:14)"
+                raise ValueError(msg.format(datestr=timeStr))
+            args_dict["session_start_time"] = timeDt
+        export2nwb(**args_dict)
