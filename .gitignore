@@ -3,6 +3,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+requirements*.txt
 
 # Jupyter notebook clutter
 .ipynb_checkpoints/

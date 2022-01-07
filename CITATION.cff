@@ -1,0 +1,24 @@
+cff-version: 1.1.0
+title: 'oephys2nwb'
+message: If you use this software, please cite it based on metadata found in this
+  file. The package oephys2nwb provides functionality to export Open Ephys binary
+  data to NWB 2.x format.
+authors:
+- affiliation: Ernst Strüngmann Institute for Neuroscience in Cooperation with Max
+    Planck Society
+  family-names: Fuertinger
+  given-names: Stefan
+  orcid: https://orcid.org/0000-0002-8118-036X
+- affiliation: Ernst Strüngmann Institute for Neuroscience in Cooperation with Max
+    Planck Society
+  family-names: Shapcott
+  given-names: Katharine
+  orcid: https://orcid.org/0000-0001-8618-5779
+license: BSD-3-Clause
+keywords:
+- neurodata without borders
+- open ephys
+- nwb 2.0
+repository-code: https://github.com/esi-neuroscience/oephys2nwb.git
+version: 0.1.dev12
+date-released: '2022-01-07'

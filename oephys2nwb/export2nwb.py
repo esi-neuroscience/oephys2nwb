@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Script for exporting binary OpenEphys data to NWB 2.x
+# Export binary OpenEphys data to NWB 2.x
 #
 
 import os
+import sys
 import xml.etree.ElementTree as ET
 import uuid
 import json
@@ -20,6 +21,8 @@ from pynwb import NWBFile, NWBHDF5IO
 from pynwb.ecephys import ElectricalSeries
 from ndx_events import TTLs
 from open_ephys.analysis import Session
+
+__all__ = ["export2nwb"]
 
 
 # Factory generating default unit-mapping dict for `EphysInfo` class
@@ -399,6 +402,24 @@ def export2nwb(data_dir : str,
     Returns
     -------
     Nothing : None
+
+    Notes
+    -----
+    All optional parameters (i.e., keyword arguments like `session_description` etc.)
+    are taken from the `NWBFile <https://pynwb.readthedocs.io/en/latest/pynwb.file.html#pynwb.file.NWBFile>`_
+    constructor. Please refer to the
+    `official NWB documentation <https://pynwb.readthedocs.io/en/stable/tutorials/general/file.html>`_
+    for additional information on the role of these parameters.
+
+    Examples
+    --------
+    Export a recording using default settings for all optional parameters:
+
+    >>> from export2nwb import export2nwb
+    >>> input = "/path/to/recordingDir"
+    >>> output = "/path/to/outputFile.nwb"
+    >>> export2nwb(input, output)
+
     """
 
     # First, ensure target NWB container does not exist yet
@@ -562,13 +583,11 @@ def export2nwb(data_dir : str,
         return
 
 
-# Run as script from command line
-if __name__ == "__main__":
-
-    # # Test stuff within here...
-    # dataDir = "testrecording_2021-11-09_17-06-14"
-    # output = "/cs/home/fuertingers/test.nwb"
-    # export2nwb(dataDir, output)
+# Parse CL args
+def clarg_parser(args):
+    """
+    Helper function for parsing CL argument input
+    """
 
     # Short description of the program
     desc = "Export binary OpenEphys data to NWB 2.0"
@@ -585,7 +604,9 @@ if __name__ == "__main__":
 
         Optional arguments (like experimenter or lab) are either inferred from
         OpenEphys meta data or can be provided via corresponding optional
-        arguments (e.g., --experimenter "Whodunnit")
+        arguments (e.g., --experimenter "Whodunnit"). Please refer to the
+        official NWB documentation for additional information on the role
+        of the available optional arguments.
 
     Python module use:
 
@@ -644,19 +665,32 @@ if __name__ == "__main__":
                         action="store", type=str, dest="experiment_description", default=None,
                         help="human readable description of experiment (default: None)")
 
-    # Parse CL-arguments, if all is well, call respective method
+    # Parse CL-arguments: if first input wasn't provided, print help and exit
     args_dict = vars(parser.parse_args())
     if args_dict["data_dir"] is None:
         parser.print_help()
-    else:
-        if args_dict["session_start_time"] is not None:
-            timeStr = args_dict["session_start_time"]
-            try:
-                timeDt = datetime.strptime(timeStr, "%d %b %Y %H:%M:%S")
-            except ValueError:
-                msg = "Invalid format of recording time: '{datestr}' " +\
-                    "Please provide start time in format D MON YYYY HH:MM:SS " +\
-                    "(e.g., 9 Nov 2021 17:06:14)"
-                raise ValueError(msg.format(datestr=timeStr))
-            args_dict["session_start_time"] = timeDt
+        return
+
+    # Otherwise convert `session_start_time` to `datetime` object and return `args_dict``
+    if args_dict["session_start_time"] is not None:
+        timeStr = args_dict["session_start_time"]
+        try:
+            timeDt = datetime.strptime(timeStr, "%d %b %Y %H:%M:%S")
+        except ValueError:
+            msg = "Invalid format of recording time: '{datestr}' " +\
+                "Please provide start time in format D MON YYYY HH:MM:SS " +\
+                "(e.g., 9 Nov 2021 17:06:14)"
+            raise ValueError(msg.format(datestr=timeStr))
+        args_dict["session_start_time"] = timeDt
+    return args_dict
+
+
+# Run as script from command line
+if __name__ == "__main__":
+
+    # Invoke command-line argument parse helper
+    args_dict = clarg_parser(sys.argv[1:])
+
+    # If `args_dict` is not `None`, call actual function
+    if args_dict:
         export2nwb(**args_dict)

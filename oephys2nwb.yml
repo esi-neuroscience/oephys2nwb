@@ -1,0 +1,25 @@
+name: oephys2nwb
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  # runtime requirements
+  - python >= 3.7
+  - pip
+  - pynwb
+  - ipython
+  - pydantic
+  - psutil
+  # Optional packages required for running the test-suite and building the HTML docs
+  - ruamel.yaml >= 0.16, < 0.17
+  - setuptools_scm
+  - numpydoc
+  - sphinx_bootstrap_theme
+  - ipython
+  - ipdb
+  - pip:
+    # Required pip packages
+    - git+https://github.com/open-ephys/open-ephys-python-tools
+    - ndx-events
+    # Optional: only necessary when building the HTML documentation
+    - sphinx_automodapi
