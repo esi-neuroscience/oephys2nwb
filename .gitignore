@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+build/
+dist/
 requirements*.txt
 
 # Jupyter notebook clutter

@@ -64,7 +64,7 @@ python -m oephys2nwb
 Alternatively, the package can be used like any other Python module
 
 ```python
-from export2nwb import export2nwb
+from oephys2nwb import export2nwb
 
 input = "/path/to/recordingDir"
 output = "/path/to/outputFile.nwb"

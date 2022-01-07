@@ -415,7 +415,7 @@ def export2nwb(data_dir : str,
     --------
     Export a recording using default settings for all optional parameters:
 
-    >>> from export2nwb import export2nwb
+    >>> from oephys2nwb import export2nwb
     >>> input = "/path/to/recordingDir"
     >>> output = "/path/to/outputFile.nwb"
     >>> export2nwb(input, output)
@@ -610,7 +610,7 @@ def clarg_parser(args):
 
     Python module use:
 
-        from export2nwb import export2nwb
+        from oephys2nwb import export2nwb
 
         input = "/path/to/recordingDir"
         output = "/path/to/outputFile.nwb"
