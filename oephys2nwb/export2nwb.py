@@ -13,7 +13,7 @@ import subprocess
 import numpy as np
 from argparse import ArgumentParser, RawTextHelpFormatter
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from typing import Optional, Union, List, Tuple, Dict
 from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
@@ -341,13 +341,24 @@ class EphysInfo:
         return value
 
 
-@validate_arguments
+def _array_parser(var, varname="varname", hasinf=None, hasnan=None, dims=None):
+    """
+    Coming soon...
+    """
+
+
+
+@validate_arguments(config=dict(arbitrary_types_allowed=True))
 def export2nwb(data_dir : str,
                output : str,
                session_description : Optional[str] = None,
                identifier : Optional[str] = None,
                session_id : Optional[str] = None,
                session_start_time : Optional[datetime] = None,
+               trial_start_times : Optional[Union[List[float], Tuple[float], np.ndarray]] = None,
+               trial_stop_times : Optional[Union[List[float], Tuple[float], np.ndarray]] = None,
+               trial_tags : Optional[Union[List[str], Tuple[str], np.ndarray]] = None,
+               trial_markers : Optional[Union[List, Tuple, np.ndarray]] = None,
                experimenter : Optional[str] = None,
                lab : Optional[str] = None,
                institution : Optional[str] = None,
@@ -381,6 +392,19 @@ def export2nwb(data_dir : str,
         Starting time of experimental session (e.g., `"datetime(2021, 11, 9, 17, 6, 14)"`).
         If not provided, `session_start_time` is read from the session's OpenEphys
         xml settings file.
+    trial_start_times : array-like or None
+        List, tuple or 1darray of trial onset times (in seconds). Length has to match
+        `trial_stop_times`. Trials can be set via `trial_start_times`/`trial_stop_times`
+        or `trial_markers`, **not*** both.
+    trial_stop_times : array-like or None
+        List, tuple or 1darray of trial stop times (in seconds). Length has to match
+        `trial_start_times`. Trials can be set via `trial_start_times`/`trial_stop_times`
+        or `trial_markers`, **not*** both.
+    trial_tags : array-like or None
+        List, tuple or 1darry comprising `numTrial` trial labels.
+    trial_markers : 2 element list or tuple
+        Event markers ``(start, stop)`` for delimiting trials. Trials can be set via
+        `trial_start_times`/`trial_stop_times` or `trial_markers`, **not*** both.
     experimenter : str or None
         Name of person conducting the experimental session (e.g., `"Whodunnit"`).
         If not provided, the host name of the recording computer used for the
@@ -431,6 +455,12 @@ def export2nwb(data_dir : str,
     outName, outExt = os.path.splitext(tmp)
     if len(outExt) == 0:
         outExt = ".nwb"
+
+    # If trial information was specified, process it here
+    # FIXME: coming soon...
+    # _array_parser(...)
+
+    import ipdb; ipdb.set_trace()
 
     # All remaining error checks (except for basic type matching) is performed by `EphysInfo`
     eInfo = EphysInfo(data_dir,
@@ -553,6 +583,7 @@ def export2nwb(data_dir : str,
             if groupName == "TTL":
                 if evt.min() < 0 or evt.max() > np.iinfo("uint16").max:
                     raise ValueError("Only unsigned integer TTL pulse values are supported. ")
+                import ipdb; ipdb.set_trace()
                 ttlData = TTLs(name="TTL_PulseValues",
                                data=evt.astype("uint16"),
                                labels=["No labels defined"],
