@@ -23,6 +23,6 @@ if __name__ == "__main__":
     dataDir = "../testrecording_2021-11-09_17-06-14/"
     outFile = "/mnt/hpx/home/fuertingers/tt.nwb"
 
-    export2nwb(dataDir, outFile, trial_start_times="asdf")
+    export2nwb(dataDir, outFile, trial_tags=["a", "asdf"])
 
 

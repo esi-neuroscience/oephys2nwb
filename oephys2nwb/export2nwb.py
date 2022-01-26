@@ -341,11 +341,73 @@ class EphysInfo:
         return value
 
 
-def _array_parser(var, varname="varname", hasinf=None, hasnan=None, dims=None):
+def _array_parser(var, varname="varname", ntype=None, hasinf=None, hasnan=None, dims=None):
     """
     Coming soon...
+
+    ntype = "numeric"/"str"
     """
 
+    # If necessary, convert `var` to simplify parsing
+    if not isinstance(var, np.ndarray):
+        arr = np.array(var, dtype=type(var[0]))
+    else:
+        arr = var
+
+    # If required, parse type (handle "int_like" and "numeric" separately)
+    if ntype is not None:
+        msg = "Expected {vname:s} with dtype = {dt:s}, found {act:s}"
+        if ntype in ["numeric"]:
+            if not np.issubdtype(arr.dtype, np.number):
+                raise ValueError(msg.format(vname=varname, dt=ntype, act=str(arr.dtype)))
+        else:
+            if not np.issubdtype(arr.dtype, np.dtype("str").type):
+                raise ValueError(msg.format(vname=varname, dt=ntype, act=str(arr.dtype)))
+
+    # If required, parse finiteness of array-elements
+    if hasinf is not None and np.isinf(arr).any():
+        msg = "Expected {vname:s} to be finite, found array with {numinf:d} `inf` entries"
+        raise ValueError(msg.format(vname=varname, numinf=np.isinf(arr).sum()))
+
+    # If required, parse well-posedness of array-elements
+    if hasnan is not None and np.isnan(arr).any():
+        msg = "Expected {vname:s} to be a well-defined numerical array, " +\
+            "found array with {numnan:d} `NaN` entries"
+        raise ValueError(msg.format(vname=varname, numnan=np.isnan(arr).sum()))
+
+    # If required parse dimensional layout of array
+    if dims is not None:
+
+        # Account for the special case of 1d character arrays (that
+        # collapse to 0d-arrays when squeezed)
+        ischar = int(np.issubdtype(arr.dtype, np.dtype("str").type))
+
+        # Compare shape or dimension number
+        if isinstance(dims, tuple):
+            if len(dims) > 1:
+                ashape = arr.shape
+            else:
+                if arr.size == 1:
+                    ashape = arr.shape
+                else:
+                    ashape = max((ischar,), arr.squeeze().shape)
+            msg = "Expected {vname:s} to be a {nd:d}-dimensional array, " +\
+                "found array of shape {shp:s}"
+            if len(dims) != len(ashape):
+                raise ValueError(msg.format(vname=varname, nd=len(dims), shp=str(arr.shape)))
+            msg = "Expected {vname:s} to have shape {dim:s}, found array of shape {shp:s}"
+            for dk, dim in enumerate(dims):
+                if dim is not None and ashape[dk] != dim:
+                    raise ValueError(msg.format(vname=varname, dim=str(dims), shp=str(arr.shape)))
+        else:
+            ndim = max(ischar, arr.ndim)
+            if ndim != dims:
+                msg = "Expected {vname:s} to be a {nd:d}-dimensional array, " +\
+                    "found array of shape {shp:s}"
+                raise ValueError(msg.format(vname=varname, nd=dims, shp=str(arr.shape)))
+
+    # Return (possibly ndarray-converted) input
+    return arr
 
 
 @validate_arguments(config=dict(arbitrary_types_allowed=True))
@@ -457,8 +519,46 @@ def export2nwb(data_dir : str,
         outExt = ".nwb"
 
     # If trial information was specified, process it here
-    # FIXME: coming soon...
-    # _array_parser(...)
+    if trial_start_times is not None:
+        trial_start_times = _array_parser(trial_start_times, varname="trial_start_times",
+                                          ntype="numeric", hasinf=False, hasnan=False,
+                                          dims=(None,)).flatten()
+    if trial_stop_times is not None:
+        trial_stop_times = _array_parser(trial_stop_times, varname="trial_stop_times",
+                                         ntype="numeric", hasinf=False, hasnan=False,
+                                         dims=(None,)).flatten()
+    if trial_tags is not None:
+        trial_tags = _array_parser(trial_tags, varname="trial_tags", ntype="str",
+                                   dims=(None,)).flatten()
+    if trial_markers is not None:
+        trial_markers = _array_parser(trial_markers, varname="trial_markers",
+                                      ntype="numeric", hasinf=False, hasnan=False,
+                                      dims=(None,)).flatten()
+
+    nTrials = None
+    if trial_start_times is not None:
+        if trial_stop_times is None:
+            raise ValueError("Cannot process `trial_start_times` without `trial_stop_times`.")
+        nTrials = trial_start_times.size
+
+    if trial_stop_times is not None:
+        if nTrials is None:
+            raise ValueError("Cannot process `trial_stop_times` without `trial_start_times`.")
+        if trial_stop_times.size != nTrials:
+            raise ValueError("Lengths of `trial_start_times` and `trial_stop_times` have to match!")
+
+    if trial_tags is not None:
+        if nTrials is None:
+            raise ValueError("Cannot process `trial_tags` without start/stop times!")
+        if trial_tags.size != nTrials:
+            err = "Lengths of `trial_tags` and `trial_start_times` and " +\
+                "`trial_stop_times` have to match!"
+            raise ValueError(err)
+
+    if nTrials is not None and trial_markers is not None:
+        err = "Cannot process `trial_markers` and `trial_start_times` and " +\
+            "`trial_stop_times` simultaneously"
+        raise ValueError(err)
 
     import ipdb; ipdb.set_trace()
 
