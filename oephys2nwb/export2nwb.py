@@ -4,6 +4,7 @@
 # Export binary OpenEphys data to NWB 2.x
 #
 
+from multiprocessing.sharedctypes import Value
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -410,6 +411,24 @@ def _array_parser(var, varname="varname", ntype=None, hasinf=None, hasnan=None, 
     return arr
 
 
+# Ensure provided trial start/stop times are actually found in data
+def _is_close(timeArr, trialTimes):
+    """
+    WARNING: This only works for sorted `timeArr` arrays!
+    """
+
+    idx = np.searchsorted(timeArr, trialTimes, side="left")
+    leftNbrs = np.abs(trialTimes - timeArr[np.maximum(idx - 1, np.zeros(idx.shape, dtype=np.intp))])
+    rightNbrs = np.abs(trialTimes - timeArr[np.minimum(idx, np.full(idx.shape, timeArr.size - 1, dtype=np.intp))])
+    shiftLeft = ((idx == timeArr.size) | (leftNbrs < rightNbrs))
+    idx[shiftLeft] -= 1
+
+    if not np.allclose(timeArr[idx], trialTimes):
+        raise ValueError("Provided trial start/stop times cannot be found in data")
+
+    return
+
+
 @validate_arguments(config=dict(arbitrary_types_allowed=True))
 def export2nwb(data_dir : str,
                output : str,
@@ -535,6 +554,7 @@ def export2nwb(data_dir : str,
                                       ntype="numeric", hasinf=False, hasnan=False,
                                       dims=(None,)).flatten()
 
+    # Ensure trial specs are consistent
     nTrials = None
     if trial_start_times is not None:
         if trial_stop_times is None:
@@ -546,6 +566,11 @@ def export2nwb(data_dir : str,
             raise ValueError("Cannot process `trial_stop_times` without `trial_start_times`.")
         if trial_stop_times.size != nTrials:
             raise ValueError("Lengths of `trial_start_times` and `trial_stop_times` have to match!")
+
+    if any(trial_stop_times - trial_start_times <= 0):
+        err = "Provided `trial_start_times` and `trial_stop_times` contain " +\
+            "trials with length <= 0"
+        raise ValueError(err)
 
     if trial_tags is not None:
         if nTrials is None:
@@ -559,8 +584,6 @@ def export2nwb(data_dir : str,
         err = "Cannot process `trial_markers` and `trial_start_times` and " +\
             "`trial_stop_times` simultaneously"
         raise ValueError(err)
-
-    import ipdb; ipdb.set_trace()
 
     # All remaining error checks (except for basic type matching) is performed by `EphysInfo`
     eInfo = EphysInfo(data_dir,
@@ -582,6 +605,33 @@ def export2nwb(data_dir : str,
     session = Session(data_dir)
     for rk, recDir in enumerate(eInfo.recordingDirs):
 
+        # Load continuous OE data
+        rec = session.recordnodes[0].recordings[rk]
+        data = rec.continuous[0].samples
+        timeStamps = rec.continuous[0].timestamps
+
+        # If trial start/stop times were provided, ensure those are actually found in the data
+        if nTrials is not None:
+            dataTime = (timeStamps - timeStamps[0]) / eInfo.sampleRate
+            _is_close(dataTime, trial_start_times)
+            _is_close(dataTime, trial_stop_times)
+
+        # Get OE event data;
+        evtPd = session.recordnodes[0].recordings[rk].events
+        evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
+        ts = evtPd.timestamp.to_numpy()
+
+        # If 16bit event-markers are used, combine 2 full words
+        if eInfo.eventDtypes[rk] == "int16":
+            evt16 = np.zeros((evt.shape[0]), int)
+            for irow in range(evt.shape[0]):
+                evt16[irow] = int(format(evt[irow,1], "08b") + format(evt[irow,0], "08b"), 2)
+            evt = evt16
+
+        # If trial markers were provided, ensure they are consistent w/event-data
+
+        import ipdb; ipdb.set_trace()
+
         if eInfo.session_id is None:
             session_id = os.path.basename(recDir)
         else:
@@ -597,10 +647,6 @@ def export2nwb(data_dir : str,
                           session_id=session_id)
 
         device = nwbfile.create_device(eInfo.device)
-
-        rec = session.recordnodes[0].recordings[rk]
-        data = rec.continuous[0].samples
-        timeStamps = rec.continuous[0].timestamps
 
         # This should never happen: expected no. of recording channels does not match data shape...
         if nRecChannels not in data.shape:
@@ -665,18 +711,6 @@ def export2nwb(data_dir : str,
                                         description=chanDesc)
             nwbfile.add_acquisition(elecData)
             esCounter += 1
-
-        # Get OE event data;
-        evtPd = session.recordnodes[0].recordings[rk].events
-        evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
-        ts = evtPd.timestamp.to_numpy()
-
-        # If 16bit event-markers are used, combine 2 full words
-        if eInfo.eventDtypes[rk] == "int16":
-            evt16 = np.zeros((evt.shape[0]), int)
-            for irow in range(evt.shape[0]):
-                evt16[irow] = int(format(evt[irow,1], "08b") + format(evt[irow,0], "08b"), 2)
-            evt = evt16
 
         # Same as above: each event channel group makes up its own NWB-data entity
         for groupName in eInfo.xmlEvtGroups:
