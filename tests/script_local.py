@@ -24,7 +24,7 @@ if __name__ == "__main__":
     dataDir = "../testrecording_2021-11-09_17-06-14/"
     outFile = "/mnt/hpx/home/fuertingers/tt.nwb"
 
-    export2nwb(dataDir, outFile, trial_start_times=[0,1,2,3,4], trial_stop_times=[1,2,3,4,5])
+    export2nwb(dataDir, outFile, trial_markers=[3000, 3090])
 
     nwbFilePath = "/mnt/hpx/home/fuertingers/test.nwb"
     nwbio = NWBHDF5IO(nwbFilePath, "r", load_namespaces=True)

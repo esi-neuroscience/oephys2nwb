@@ -552,7 +552,7 @@ def export2nwb(data_dir : str,
     if trial_markers is not None:
         trial_markers = _array_parser(trial_markers, varname="trial_markers",
                                       ntype="numeric", hasinf=False, hasnan=False,
-                                      dims=(None,)).flatten()
+                                      dims=(2,)).flatten()
 
     # Ensure trial specs are consistent
     nTrials = None
@@ -567,10 +567,11 @@ def export2nwb(data_dir : str,
         if trial_stop_times.size != nTrials:
             raise ValueError("Lengths of `trial_start_times` and `trial_stop_times` have to match!")
 
-    if any(trial_stop_times - trial_start_times <= 0):
-        err = "Provided `trial_start_times` and `trial_stop_times` contain " +\
-            "trials with length <= 0"
-        raise ValueError(err)
+    if nTrials is not None:
+        if any(trial_stop_times - trial_start_times <= 0):
+            err = "Provided `trial_start_times` and `trial_stop_times` contain " +\
+                "trials with length <= 0"
+            raise ValueError(err)
 
     if trial_tags is not None:
         if nTrials is None:
@@ -629,9 +630,17 @@ def export2nwb(data_dir : str,
             evt = evt16
 
         # If trial markers were provided, ensure they are consistent w/event-data
+        if trial_markers is not None:
+            trial_start_idx = np.where(evt == trial_markers[0])[0]
+            trial_stop_idx = np.where(evt == trial_markers[1])[0]
+            if trial_start_idx.size != trial_stop_idx.size:
+                err = "Provided `trial_markers` yield unequal trial start/stop counts"
+                raise ValueError(err)
+            trial_start_times = timeStamps[trial_start_times] / eInfo.sampleRate
+            trial_stop_times = timeStamps[trial_stop_times] / eInfo.sampleRate
 
-        import ipdb; ipdb.set_trace()
 
+        # Either use provided (single!) session ID or generate one based on `recDir`
         if eInfo.session_id is None:
             session_id = os.path.basename(recDir)
         else:
@@ -717,7 +726,6 @@ def export2nwb(data_dir : str,
             if groupName == "TTL":
                 if evt.min() < 0 or evt.max() > np.iinfo("uint16").max:
                     raise ValueError("Only unsigned integer TTL pulse values are supported. ")
-                import ipdb; ipdb.set_trace()
                 ttlData = TTLs(name="TTL_PulseValues",
                                data=evt.astype("uint16"),
                                labels=["No labels defined"],
