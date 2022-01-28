@@ -631,13 +631,31 @@ def export2nwb(data_dir : str,
 
         # If trial markers were provided, ensure they are consistent w/event-data
         if trial_markers is not None:
-            trial_start_idx = np.where(evt == trial_markers[0])[0]
-            trial_stop_idx = np.where(evt == trial_markers[1])[0]
+            # find unique evt only
+            evt_ts = np.stack((evt, ts),axis=-1)
+            evt_unique, ind = np.unique(evt_ts, axis=0, return_index=True)
+            evt_unique = evt_ts[np.sort(ind)]
+            
+            trial_start_idx = np.where(evt_unique[:,0] == trial_markers[0])[0]
+            trial_stop_idx = np.where(evt_unique[:,0] == trial_markers[1])[0]
+            
+            # take care of recording stopping before trial end
+            if trial_stop_idx.size == trial_start_idx.size-1:
+                trial_start_idx = trial_start_idx[:-1]
+            
             if trial_start_idx.size != trial_stop_idx.size:
                 err = "Provided `trial_markers` yield unequal trial start/stop counts"
                 raise ValueError(err)
-            trial_start_times = timeStamps[trial_start_times] / eInfo.sampleRate
-            trial_stop_times = timeStamps[trial_stop_times] / eInfo.sampleRate
+                
+            trial_start_times = evt_unique[:,1][trial_start_idx]
+            trial_stop_times = evt_unique[:,1][trial_stop_idx]
+            
+            if any(trial_stop_times - trial_start_times <= 0):
+                err = "Provided `trial_markers` contain trials with length <= 0"
+                raise ValueError(err)
+            
+            trial_start_times = trial_start_times / eInfo.sampleRate
+            trial_stop_times = trial_stop_times / eInfo.sampleRate
 
 
         # Either use provided (single!) session ID or generate one based on `recDir`
