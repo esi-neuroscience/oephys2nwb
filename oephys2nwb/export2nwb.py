@@ -613,12 +613,6 @@ def export2nwb(data_dir : str,
         data = rec.continuous[0].samples
         timeStamps = rec.continuous[0].timestamps
 
-        # If trial start/stop times were provided, ensure those are actually found in the data
-        if nTrials is not None:
-            dataTime = (timeStamps - timeStamps[0]) / eInfo.sampleRate
-            _is_close(dataTime, trial_start_times)
-            _is_close(dataTime, trial_stop_times)
-
         # Get OE event data;
         evtPd = session.recordnodes[0].recordings[rk].events
         evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
@@ -659,6 +653,15 @@ def export2nwb(data_dir : str,
             trial_start_times = trial_start_times / eInfo.sampleRate
             trial_stop_times = trial_stop_times / eInfo.sampleRate
 
+        # If trial delimiters were provided, ensure those are actually found in the data
+        if trial_start_times is not None:
+            dataTime = timeStamps / eInfo.sampleRate
+            _is_close(dataTime, trial_start_times)
+            _is_close(dataTime, trial_stop_times)
+
+            # If no trial tags were provided, generate dummy ones
+            if trial_tags is None:
+                trial_tags = [None] * len(trial_start_times)
 
         # Either use provided (single!) session ID or generate one based on `recDir`
         if eInfo.session_id is None:
@@ -688,6 +691,7 @@ def export2nwb(data_dir : str,
         # Create separate `ElectricalSeries` objects for each recording channel group
         esCounter = 1
         elCounter = 0
+        esList = []
         for groupName in eInfo.xmlRecGroups:
 
             # Every channel group is mapped onto an `electrode_group`
@@ -739,7 +743,16 @@ def export2nwb(data_dir : str,
                                         rate=eInfo.sampleRate,
                                         description=chanDesc)
             nwbfile.add_acquisition(elecData)
+            esList.append(elecData)
             esCounter += 1
+
+        # Include trial delimiters (if provided)
+        if trial_start_times is not None:
+            for ti in range(len(trial_start_times)):
+                nwbfile.add_epoch(trial_start_times[ti],
+                                  trial_stop_times[ti],
+                                  trial_tags[ti])
+                                #   esList)
 
         # Same as above: each event channel group makes up its own NWB-data entity
         for groupName in eInfo.xmlEvtGroups:

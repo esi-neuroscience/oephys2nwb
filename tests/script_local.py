@@ -26,9 +26,11 @@ if __name__ == "__main__":
 
     export2nwb(dataDir, outFile, trial_markers=[3000, 3090])
 
-    nwbFilePath = "/mnt/hpx/home/fuertingers/test.nwb"
-    nwbio = NWBHDF5IO(nwbFilePath, "r", load_namespaces=True)
+    nwbio = NWBHDF5IO(outFile, "r", load_namespaces=True)
     nwbfile = nwbio.read()
+
+    tstart = nwbfile.epochs['start_time'].data[()]
+
 
 
 
