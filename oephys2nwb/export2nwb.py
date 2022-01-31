@@ -97,13 +97,15 @@ class EphysInfo:
         self.settingsFile = xmlFiles[0]
 
         basePath = Path(os.path.dirname(self.settingsFile))
-        experimentDirs = [str(entry) for entry in basePath.iterdir() if entry.is_dir()]
+        experimentDirs = [str(entry) for entry in basePath.iterdir() \
+            if entry.is_dir() and entry.name.startswith("experiment")]
         if len(experimentDirs) != 1:
             err = "Found {numf} experiments in {folder}"
             raise ValueError(err.format(numf=len(experimentDirs), folder=self.data_dir))
         self.experimentDir = experimentDirs[0]
 
-        self.recordingDirs = [str(entry) for entry in Path(self.experimentDir).iterdir() if entry.is_dir()]
+        self.recordingDirs = [str(entry) for entry in Path(self.experimentDir).iterdir() \
+            if entry.is_dir() and entry.name.startswith("recording")]
         if len(self.recordingDirs) == 0:
             err = "No recording directory found"
             raise ValueError(err)
@@ -635,25 +637,25 @@ def export2nwb(data_dir : str,
             evt_ts = np.stack((evt, ts),axis=-1)
             evt_unique, ind = np.unique(evt_ts, axis=0, return_index=True)
             evt_unique = evt_ts[np.sort(ind)]
-            
+
             trial_start_idx = np.where(evt_unique[:,0] == trial_markers[0])[0]
             trial_stop_idx = np.where(evt_unique[:,0] == trial_markers[1])[0]
-            
+
             # take care of recording stopping before trial end
             if trial_stop_idx.size == trial_start_idx.size-1:
                 trial_start_idx = trial_start_idx[:-1]
-            
+
             if trial_start_idx.size != trial_stop_idx.size:
                 err = "Provided `trial_markers` yield unequal trial start/stop counts"
                 raise ValueError(err)
-                
+
             trial_start_times = evt_unique[:,1][trial_start_idx]
             trial_stop_times = evt_unique[:,1][trial_stop_idx]
-            
+
             if any(trial_stop_times - trial_start_times <= 0):
                 err = "Provided `trial_markers` contain trials with length <= 0"
                 raise ValueError(err)
-            
+
             trial_start_times = trial_start_times / eInfo.sampleRate
             trial_stop_times = trial_stop_times / eInfo.sampleRate
 
