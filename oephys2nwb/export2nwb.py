@@ -4,7 +4,6 @@
 # Export binary OpenEphys data to NWB 2.x
 #
 
-from multiprocessing.sharedctypes import Value
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -611,7 +610,7 @@ def export2nwb(data_dir : str,
         # Load continuous OE data
         rec = session.recordnodes[0].recordings[rk]
         data = rec.continuous[0].samples
-        timeStamps = rec.continuous[0].timestamps
+        timeStamps = rec.continuous[0].timestamps / eInfo.sampleRate
 
         # Get OE event data;
         evtPd = session.recordnodes[0].recordings[rk].events
@@ -655,9 +654,8 @@ def export2nwb(data_dir : str,
 
         # If trial delimiters were provided, ensure those are actually found in the data
         if trial_start_times is not None:
-            dataTime = timeStamps / eInfo.sampleRate
-            _is_close(dataTime, trial_start_times)
-            _is_close(dataTime, trial_stop_times)
+            _is_close(timeStamps, trial_start_times)
+            _is_close(timeStamps, trial_stop_times)
 
             # If no trial tags were provided, generate dummy ones
             if trial_tags is None:
