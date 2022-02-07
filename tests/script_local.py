@@ -22,7 +22,7 @@ if __name__ == "__main__":
 
     # Test stuff within here...
     dataDir = "../testrecording_2021-11-09_17-06-14/"
-    outFile = "/mnt/hpx/home/fuertingers/tt.nwb"
+    outFile = "/mnt/hpx/home/fuertingers/tt2.nwb"
 
     export2nwb(dataDir, outFile, trial_markers=[3000, 3090])
 

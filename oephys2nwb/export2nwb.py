@@ -615,7 +615,7 @@ def export2nwb(data_dir : str,
         # Get OE event data;
         evtPd = session.recordnodes[0].recordings[rk].events
         evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
-        ts = evtPd.timestamp.to_numpy()
+        ts = evtPd.timestamp.to_numpy()  / eInfo.sampleRate
 
         # If 16bit event-markers are used, combine 2 full words
         if eInfo.eventDtypes[rk] == "int16":
@@ -648,9 +648,6 @@ def export2nwb(data_dir : str,
             if any(trial_stop_times - trial_start_times <= 0):
                 err = "Provided `trial_markers` contain trials with length <= 0"
                 raise ValueError(err)
-
-            trial_start_times = trial_start_times / eInfo.sampleRate
-            trial_stop_times = trial_stop_times / eInfo.sampleRate
 
         # If trial delimiters were provided, ensure those are actually found in the data
         if trial_start_times is not None:
@@ -764,12 +761,12 @@ def export2nwb(data_dir : str,
                                resolution=1/eInfo.sampleRate,
                                description="TTL pulse values")
                 nwbfile.add_acquisition(ttlData)
-                ttlChan = TTLs(name="TTL_ChannelValues",
-                               data=evtPd.channel.to_numpy(),
+                ttlChan = TTLs(name="TTL_ChannelStates",
+                               data=evtPd.state.to_numpy(),
                                labels=["No labels defined"],
                                timestamps=ts,
                                resolution=1/eInfo.sampleRate,
-                               description="TTL pulse channels")
+                               description="TTL channel states")
                 nwbfile.add_acquisition(ttlChan)
             else:
                 raise NotImplementedError("Currently, only TTL pulse events are supported")
