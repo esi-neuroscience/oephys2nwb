@@ -761,13 +761,20 @@ def export2nwb(data_dir : str,
                                resolution=1/eInfo.sampleRate,
                                description="TTL pulse values")
                 nwbfile.add_acquisition(ttlData)
-                ttlChan = TTLs(name="TTL_ChannelStates",
+                ttlChan = TTLs(name="TTL_Channels",
+                               data=evtPd.channel.to_numpy(),
+                               labels=["No labels defined"],
+                               timestamps=ts,
+                               resolution=1/eInfo.sampleRate,
+                               description="TTL channel number")
+                nwbfile.add_acquisition(ttlChan)
+                ttlState = TTLs(name="TTL_ChannelStates",
                                data=evtPd.state.to_numpy(),
                                labels=["No labels defined"],
                                timestamps=ts,
                                resolution=1/eInfo.sampleRate,
                                description="TTL channel states")
-                nwbfile.add_acquisition(ttlChan)
+                nwbfile.add_acquisition(ttlState)
             else:
                 raise NotImplementedError("Currently, only TTL pulse events are supported")
 
