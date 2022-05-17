@@ -786,7 +786,8 @@ def export2nwb(data_dir : str,
             io.write(nwbfile)
 
         # Perform validation of generated NWB file: https://pynwb.readthedocs.io/en/latest/validation.html
-        subprocess.run(["python", "-m", "pynwb.validate", outFileName], check=True)
+        this_python = os.path.join(os.path.dirname(sys.executable),'python')
+        subprocess.run([this_python, "-m", "pynwb.validate", outFileName], check=True)
 
         return
 
