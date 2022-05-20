@@ -18,6 +18,7 @@ and released free of charge under the
 The package can be installed with `pip`
 
 ```shell
+pip install git+https://github.com/open-ephys/open-ephys-python-tools
 pip install esi-oephys2nwb
 ```
 

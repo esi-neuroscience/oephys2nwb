@@ -21,4 +21,4 @@ message: If you use this software, please cite it based on metadata found in thi
   data to NWB 2.x format.
 repository-code: https://github.com/esi-neuroscience/oephys2nwb.git
 title: oephys2nwb
-version: 2022.5rc1.dev0
+version: 2022.5rc0
