@@ -42,6 +42,7 @@ information about conda, please refer to the [official documentation](https://do
 ```shell
 conda create -n oephys2nwb-env python=3.8 pip
 conda activate oephys2nwb-env
+pip install git+https://github.com/open-ephys/open-ephys-python-tools
 pip install esi-oephys2nwb
 ```
 
