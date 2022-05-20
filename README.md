@@ -21,11 +21,15 @@ The package can be installed with `pip`
 pip install esi-oephys2nwb
 ```
 
-To get the latest development version, simply clone our GitHub repository:
+To get the latest development version, simply clone our GitHub repository and
+(optionally) create a dedicated conda development environment:
 
 ```shell
 git clone https://github.com/esi-neuroscience/oephys2nwb.git
 cd oephys2nwb/
+python setup.py --version
+conda env create -f oephys2nwb-dev.yml
+conda activate oephys2nwb-dev
 pip install -e .
 ```
 
@@ -38,6 +42,15 @@ information about conda, please refer to the [official documentation](https://do
 conda create -n oephys2nwb-env python=3.8 pip
 conda activate oephys2nwb-env
 pip install esi-oephys2nwb
+```
+
+Alternatively, we provide a conda environment file to automatically install all
+required dependencies
+
+```shell
+wget https://raw.githubusercontent.com/esi-neuroscience/oephys2nwb/main/oephys2nwb.yml
+conda env create -f oephys2nwb.yml
+conda activate oephys2nwb
 ```
 
 Once the package is installed the exporter can be used either embedded in Python

@@ -6,10 +6,14 @@ channels:
 dependencies:
 - pydantic
 - pynwb
+- ipdb
+- ipython
+- numpydoc
+- sphinx_bootstrap_theme
 - python >=3.7
 - pip
 - pip:
-  - esi-oephys2nwb
   - ndx-events
   - git+https://github.com/open-ephys/open-ephys-python-tools
-name: oephys2nwb
+  - sphinx_automodapi
+name: oephys2nwb-dev
