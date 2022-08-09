@@ -283,9 +283,10 @@ class EphysInfo:
                 units = self.dict_get(recJson, jsonChan, "units")
                 xmlIdx = int(chan.get("number"))
                 if name != chan.get("name"):
-                    err = "Recording channel name mismatch in JSON file {}: expected {} found {}"
-                    raise ValueError(err.format(recJson, chan.get("name"), name))
-                if sourceIdx != xmlIdx and recIdx != xmlIdx:
+                    warn = "Assuming channel remapping: expected {} found {}"
+                    print(warn.format(chan.get("name"), name))
+                    chan.set("name", name)
+                elif sourceIdx != xmlIdx and recIdx != xmlIdx:
                     err = "Recording channel index mismatch in JSON file {}: expected {} found {} or {}"
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
