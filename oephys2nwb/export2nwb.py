@@ -728,10 +728,15 @@ def export2nwb(data_dir : str,
             # Use default name of NWB object to increase chances that 3rd party
             # tools operate seamlessly with it; also use `rate` instead of storing
             # timestamps to ensure tools relying on constant sampling rate work
-            # FIXME: Memory efficient writing
-            # https://pynwb.readthedocs.io/en/stable/tutorials/advanced_io/iterative_write.html#example-convert-large-binary-data-arrays
+            
+            # Simple speed improvement by keeping data memory mapped when possible
+            if np.all(np.diff(elecIdxs) == 1):
+                elecIdxs_efficient = np.s_[elecIdxs[0]:elecIdxs[-1]+1]
+            else:
+                elecIdxs_efficient = elecIdxs
+                
             elecData = ElectricalSeries(name="ElectricalSeries_{}".format(esCounter),
-                                        data=data[:, elecIdxs],
+                                        data=data[:, elecIdxs_efficient],
                                         electrodes=elecRegion,
                                         channel_conversion=chanGains[elecIdxs],
                                         conversion=eInfo.recChannelUnitConversion[chanUnit],
