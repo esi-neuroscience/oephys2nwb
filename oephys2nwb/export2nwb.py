@@ -276,6 +276,7 @@ class EphysInfo:
                 self.sampleRate = float(srate)
 
             channels = self.dict_get(recJson, continuous, "channels")
+            remap_warn = [] 
             for ck, chan in enumerate(self.xmlRecChannels):
                 jsonChan = channels[ck]
                 name = self.dict_get(recJson, jsonChan, "channel_name")
@@ -284,13 +285,17 @@ class EphysInfo:
                 units = self.dict_get(recJson, jsonChan, "units")
                 xmlIdx = int(chan.get("number"))
                 if name != chan.get("name"):
-                    warn = "Assuming channel remapping: expected {} found {}"
-                    print(warn.format(chan.get("name"), name))
+                    if len(remap_warn) == 0:
+                        remap_warn = "Assuming channel remapping for channels: "
+                    remap_warn += name+' '
                     chan.set("name", name)
                 elif sourceIdx != xmlIdx and recIdx != xmlIdx:
                     err = "Recording channel index mismatch in JSON file {}: expected {} found {} or {}"
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
+            if len(remap_warn) > 0:
+                print(remap_warn)
+            
 
             # We allow each recording to have its own unit but no mV/uV mix ups within the same recording
             chanUnits = list(set(chan.get("units") for chan in self.xmlRecChannels))
@@ -740,9 +745,14 @@ def export2nwb(data_dir : str,
             else:
                 elecIdxs_efficient.append(elecIdxs)
                 
+            # calculate 1 mb chunksizes
+            membytes = 1024 **2
+            nSamp = int(membytes / (len(elecIdxs) * data.dtype.itemsize))
+            chunk_sz = (nSamp, len(elecIdxs))
+                
             wrapped_data = H5DataIO(
                 data=np.empty(shape=(0, len(elecIdxs)), dtype=data.dtype),#data[:, elecIdxs_efficient],
-                chunks=True,          # <---- Enable chunking
+                chunks=chunk_sz,          # <---- Enable chunking
                 maxshape=(None, len(elecIdxs)),  # <---- Make the time dimension unlimited and hence resizeable
             )
             
@@ -823,7 +833,6 @@ def export2nwb(data_dir : str,
                 # `blockList` is a list of samples to load per swipe, i.e., `[nSamp, nSamp, ..., rem]`
                 membytes = (memuse * 1024**2)
                 nSamp = int(membytes / (nwb_data.shape[1] * data_dtype.itemsize))
-                #nSamp = int(np.rint(nSamp/nwb_data.chunks[0])*nwb_data.chunks[0])
                 rem = int(data_shape[0] % nSamp)
                 blockList = [nSamp] * int(data_shape[0] // nSamp) + [rem] * int(rem > 0)
                 
