@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
 from pynwb import NWBFile, NWBHDF5IO
+from hdmf.backends.hdf5.h5_utils import H5DataIO
 from pynwb.ecephys import ElectricalSeries
 from ndx_events import TTLs
 from open_ephys.analysis import Session
@@ -275,6 +276,7 @@ class EphysInfo:
                 self.sampleRate = float(srate)
 
             channels = self.dict_get(recJson, continuous, "channels")
+            remap_warn = [] 
             for ck, chan in enumerate(self.xmlRecChannels):
                 jsonChan = channels[ck]
                 name = self.dict_get(recJson, jsonChan, "channel_name")
@@ -283,13 +285,17 @@ class EphysInfo:
                 units = self.dict_get(recJson, jsonChan, "units")
                 xmlIdx = int(chan.get("number"))
                 if name != chan.get("name"):
-                    warn = "Assuming channel remapping: expected {} found {}"
-                    print(warn.format(chan.get("name"), name))
+                    if len(remap_warn) == 0:
+                        remap_warn = "Assuming channel remapping for channels: "
+                    remap_warn += name+' '
                     chan.set("name", name)
                 elif sourceIdx != xmlIdx and recIdx != xmlIdx:
                     err = "Recording channel index mismatch in JSON file {}: expected {} found {} or {}"
                     raise ValueError(err.format(recJson, xmlIdx, sourceIdx, recIdx))
                 chan.set("units", units)
+            if len(remap_warn) > 0:
+                print(remap_warn)
+            
 
             # We allow each recording to have its own unit but no mV/uV mix ups within the same recording
             chanUnits = list(set(chan.get("units") for chan in self.xmlRecChannels))
@@ -434,6 +440,7 @@ def _is_close(timeArr, trialTimes):
 @validate_arguments(config=dict(arbitrary_types_allowed=True))
 def export2nwb(data_dir : str,
                output : str,
+               memuse : Optional[int] = 3000,
                session_description : Optional[str] = None,
                identifier : Optional[str] = None,
                session_id : Optional[str] = None,
@@ -459,6 +466,8 @@ def export2nwb(data_dir : str,
         The file-name extension can be chosen freely (e.g., `"/path/to/outputFile.myext"`),
         if no extension is provided the suffix `'.nwb'` is added (e.g., ``output = "myfile"``
         generates an NWB container `"myfile.nwb"` in the current directory).
+    memuse : int
+        Approximate in-memory cache size (in MB) for reading data from disk
     session_description : str or None
         Human readable caption of experimental session (e.g., `"Experiment_1"`).
         If not provided, the base name of `data_dir` is used.
@@ -688,6 +697,7 @@ def export2nwb(data_dir : str,
         esCounter = 1
         elCounter = 0
         esList = []
+        elecIdxs_efficient = []
         for groupName in eInfo.xmlRecGroups:
 
             # Every channel group is mapped onto an `electrode_group`
@@ -731,12 +741,23 @@ def export2nwb(data_dir : str,
             
             # Simple speed improvement by keeping data memory mapped when possible
             if np.all(np.diff(elecIdxs) == 1):
-                elecIdxs_efficient = np.s_[elecIdxs[0]:elecIdxs[-1]+1]
+                elecIdxs_efficient.append(np.s_[elecIdxs[0]:elecIdxs[-1]+1])
             else:
-                elecIdxs_efficient = elecIdxs
+                elecIdxs_efficient.append(elecIdxs)
                 
+            # calculate 1 mb chunksizes
+            membytes = 1024 **2
+            nSamp = int(membytes / (len(elecIdxs) * data.dtype.itemsize))
+            chunk_sz = (nSamp, len(elecIdxs))
+                
+            wrapped_data = H5DataIO(
+                data=np.empty(shape=(0, len(elecIdxs)), dtype=data.dtype),#data[:, elecIdxs_efficient],
+                chunks=chunk_sz,          # <---- Enable chunking
+                maxshape=(None, len(elecIdxs)),  # <---- Make the time dimension unlimited and hence resizeable
+            )
+            
             elecData = ElectricalSeries(name="ElectricalSeries_{}".format(esCounter),
-                                        data=data[:, elecIdxs_efficient],
+                                        data=wrapped_data,
                                         electrodes=elecRegion,
                                         channel_conversion=chanGains[elecIdxs],
                                         conversion=eInfo.recChannelUnitConversion[chanUnit],
@@ -787,17 +808,52 @@ def export2nwb(data_dir : str,
         # Spikes currently not supported; caught by `EphysInfo` class in `process_json`
 
         # Finally, write NWB file to disk
+        print('Writing NWB file')
         outFileName = os.path.join(outBase, outName + outExt).format(rk)
         with NWBHDF5IO(outFileName, "w") as io:
             io.write(nwbfile)
-
+        
+        # delete memory maps
+        data_loc = data.filename
+        data_shape = data.shape
+        data_dtype = data.dtype
+        del data, rec, timeStamps, session
+        
+        # write data to NWB file in blocks
+        with NWBHDF5IO(outFileName, mode='a') as io:
+            nwbfile = io.read()
+            for ii, elecData in enumerate(esList):
+                print('Writing NWB data ',elecData.name)
+                nwb_data = nwbfile.get_acquisition(elecData.name).data
+                nwb_data.resize((data_shape[0],nwb_data.maxshape[1]))#data[:, elecIdxs_efficient[ii]].shape)
+                
+                # Given memory cap, compute how many data blocks can be grabbed per swipe:
+                # `nSamp` is the no. of samples that can be loaded into memory without exceeding `memuse`
+                # `rem` is the no. of remaining samples, s. t. ``nSamp + rem = angDset.shape[0]`
+                # `blockList` is a list of samples to load per swipe, i.e., `[nSamp, nSamp, ..., rem]`
+                membytes = (memuse * 1024**2)
+                nSamp = int(membytes / (nwb_data.shape[1] * data_dtype.itemsize))
+                rem = int(data_shape[0] % nSamp)
+                blockList = [nSamp] * int(data_shape[0] // nSamp) + [rem] * int(rem > 0)
+                
+                real_memuse = (nSamp*nwb_data.shape[1]* data_dtype.itemsize)/1024**3
+                print("Writing data in blocks of {} GB".format(round(real_memuse, 2)))
+                
+                
+                for m, M in enumerate(blockList):
+                    st, end = m * nSamp, m * nSamp + M
+                    newfp = np.memmap(data_loc, dtype=data_dtype, mode='r', shape=(data_shape))
+                    nwb_data[st:end, :] = newfp[st:end, elecIdxs_efficient[ii]]
+                    del newfp
+        
+        
         # Perform validation of generated NWB file: https://pynwb.readthedocs.io/en/latest/validation.html
         this_python = os.path.join(os.path.dirname(sys.executable),'python')
         subprocess.run([this_python, "-m", "pynwb.validate", outFileName], check=True)
 
         return
-
-
+    
+    
 # Parse CL args
 def clarg_parser(args):
     """
