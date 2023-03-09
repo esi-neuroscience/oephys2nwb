@@ -329,10 +329,10 @@ class EphysInfo:
                     self.eventDirs.append(eventDir)
                     evtDtype = self.dict_get(recJson, event, "type")
                     self.eventDtypes.append(evtDtype)
-                srate = self.dict_get(recJson, event, "sample_rate")
-                if srate != self.sampleRate:
-                    err = "Unsupported: more than one sample-rate in JSON file {}"
-                    raise ValueError(err.format(recJson))
+                    srate = self.dict_get(recJson, event, "sample_rate")
+                    if srate != self.sampleRate:
+                        err = "Unsupported: more than one sample-rate in JSON file {}"
+                        raise ValueError(err.format(recJson))
 
             # --- SPIKES ---
             spikes = self.dict_get(recJson, recInfo, "spikes")
