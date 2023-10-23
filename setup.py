@@ -36,7 +36,7 @@ def _create_ymlDict(pkgList, envName, channels=["defaults", "conda-forge"], incl
     return ymlDict
 
 # Set release version by hand
-releaseVersion = "2022.5rc0"
+releaseVersion = "0.5"
 
 # Read dependencies from setup.cfg and create conda environment files
 setupOpts = read_configuration("setup.cfg")["options"]
