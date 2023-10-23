@@ -73,11 +73,11 @@ with open(envDev, 'w') as ymlFile:
 # use the hard-coded `releaseVersion` as version. Otherwise keep the local `tag.devx`
 # scheme for TestPyPI uploads
 proc = subprocess.run("git branch --show-current", shell=True, capture_output=True, text=True)
-if proc.returncode !=0 or proc.stdout.strip() == "main":
+if proc.returncode !=0 or proc.stdout.strip() in ["0.5", "0.6"]:
     version = releaseVersion
     versionKws = {"use_scm_version" : False, "version" : version}
 else:
-    version = get_version(root='.', relative_to=__file__, local_scheme="no-local-version")
+    version = get_version(root='.', relative_to=__file__, local_scheme="no-local-version").split("+")[0]
     versionKws = {"use_scm_version" : {"local_scheme": "no-local-version"}}
 
 # Update citation file
