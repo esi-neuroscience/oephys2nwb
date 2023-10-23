@@ -1,6 +1,10 @@
-# -*- coding: utf-8 -*-
 #
 # Main package initializer
+#
+# Copyright © 2023 Ernst Strüngmann Institute (ESI) for Neuroscience
+# in Cooperation with Max Planck Society
+#
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 # Builtin/3rd party package imports
@@ -25,7 +29,7 @@ except DistributionNotFound:
         if proc.returncode != 0:
             msg = "WARNING: oephys2nwb is not installed in site-packages nor cloned via git. " +\
                 "Please consider obtaining its sources from supported channels. "
-            warnings.showwarning(msg, ImportWarning, __file__, inspect.currentframe().f_lineno)
+            warnings.warn(msg)
             out = "-999"
     __version__ = out.rstrip("\n")
 

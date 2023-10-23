@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 #
 # Export binary OpenEphys data to NWB 2.x
+#
+# Copyright © 2023 Ernst Strüngmann Institute (ESI) for Neuroscience
+# in Cooperation with Max Planck Society
+#
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import os
@@ -9,11 +13,13 @@ import sys
 import xml.etree.ElementTree as ET
 import uuid
 import json
+import warnings
 import subprocess
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from argparse import ArgumentParser, RawTextHelpFormatter
 from dataclasses import dataclass, field
-from typing import Optional, Union, List, Tuple, Dict
+from typing import Optional, Union, List, Tuple, Dict, Any
 from pathlib import Path
 from datetime import datetime
 from pydantic import validate_arguments
@@ -64,7 +70,7 @@ class EphysInfo:
     sampleRate : float = field(default=None, init=False)
     recChannelUnitConversion : Dict = field(default_factory=_unitConversionMapping, init=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """
         Manager method invoking all required parsing helpers
         """
@@ -81,7 +87,9 @@ class EphysInfo:
 
         self.process_json()
 
-    def process_xml(self):
+        return
+
+    def process_xml(self) -> None:
         """
         Read OpenEphys XML settings file and vet its contents
         """
@@ -150,14 +158,16 @@ class EphysInfo:
                 self.lab = self.machine.lower().split("esi-")[1][2:5].upper() # get ESI lab code (HSV, LAU, FRI etc.)
 
         channels, groups = self.get_rec_channel_info()
-        self.xmlRecChannels = list(channels)
-        self.xmlRecGroups = list(groups)
+        self.xmlRecChannels = channels
+        self.xmlRecGroups = groups
 
         channels, groups = self.get_evt_channel_info()
-        self.xmlEvtChannels = list(channels)
-        self.xmlEvtGroups = list(groups)
+        self.xmlEvtChannels = channels
+        self.xmlEvtGroups = groups
 
-    def xml_get(self, elemPath):
+        return
+
+    def xml_get(self, elemPath : str) -> ET.Element:
         """
         Helper method that (tries to) fetch an element from settings.xml
         """
@@ -167,7 +177,7 @@ class EphysInfo:
             raise ValueError(xmlErr.format(self.settingsFile, elemPath))
         return elem
 
-    def get_rec_channel_info(self):
+    def get_rec_channel_info(self) -> tuple[List, List]:
         """
         Helper method that fetches/parsers recording channels found in settings.xml
         """
@@ -202,7 +212,7 @@ class EphysInfo:
 
         return chanList, list(set(chanGroups))
 
-    def get_evt_channel_info(self):
+    def get_evt_channel_info(self) -> tuple[List, List]:
         """
         Helper method that fetches/parsers event channels found in settings.xml
         """
@@ -211,6 +221,7 @@ class EphysInfo:
         editor = self.xml_get("SIGNALCHAIN/PROCESSOR/EDITOR")
         chanList = []
         chanGroups = []
+
         for chan in editor.iter("EVENT_CHANNEL"):
 
             # Assign each channel to a group by creating a new XML tag: pay
@@ -226,15 +237,15 @@ class EphysInfo:
             chanList.append(chan)
             chanGroups.append(chan.get("group"))
 
-        # Abort if no valid channels were found
+        # Issue a warning in case no event channels were found
         if len(chanList) == 0:
-            err = "Found no valid event channels in {} file"
-            raise ValueError(err.format(self.settingsFile))
+            wrn = f"Found no valid event channels in {self.settingsFile} file"
+            warnings.warn(wrn)
 
         return chanList, list(set(chanGroups))
 
 
-    def process_json(self):
+    def process_json(self) -> None:
         """
         Helper method that fetches info from OpenEphys JSON file and ensures
         that contents match up with values obtained from settings.xml
@@ -276,7 +287,7 @@ class EphysInfo:
                 self.sampleRate = float(srate)
 
             channels = self.dict_get(recJson, continuous, "channels")
-            remap_warn = [] 
+            remap_warn = []
             for ck, chan in enumerate(self.xmlRecChannels):
                 jsonChan = channels[ck]
                 name = self.dict_get(recJson, jsonChan, "channel_name")
@@ -295,7 +306,7 @@ class EphysInfo:
                 chan.set("units", units)
             if len(remap_warn) > 0:
                 print(remap_warn)
-            
+
 
             # We allow each recording to have its own unit but no mV/uV mix ups within the same recording
             chanUnits = list(set(chan.get("units") for chan in self.xmlRecChannels))
@@ -339,7 +350,13 @@ class EphysInfo:
             for spike in spikes:
                 raise NotImplementedError("Spike data is currently not supported")
 
-    def dict_get(self, recJson, dict, key):
+        return
+
+    def dict_get(
+            self,
+            recJson : str,
+            dict : Dict,
+            key : str) -> Union[int, str, List]:
         """
         Helper method that (tries to) fetch an element from OE JSON file
         """
@@ -350,11 +367,53 @@ class EphysInfo:
         return value
 
 
-def _array_parser(var, varname="varname", ntype=None, hasinf=None, hasnan=None, dims=None):
+def _array_parser(
+        var : Any,
+        varname : str = "varname",
+        ntype : Optional[str] = None,
+        hasinf: Optional[bool] = None,
+        hasnan: Optional[bool] = None,
+        dims: Optional[Union[Tuple, int]] = None) -> NDArray:
     """
-    Coming soon...
-
+    Helper to parse array-like objects and check for correct dype, shape, finiteness, etc.
     ntype = "numeric"/"str"
+
+    Parameters
+    ----------
+    var : array_like
+        Array-like object to verify
+    varname : str
+        Local variable name used in caller
+    ntype : None or str
+        Expected data type of `var`. Possible options are 'numeric' or 'str'
+        If `ntype` is `None` the data type of `var` is not checked.
+    hasinf : None or bool
+        If `hasinf` is not `None` the input array `var` is considered invalid
+        if it contains non-finite elements (`np.inf`).
+    hasnan : None or bool
+        If `hasnan` is not `None` the input array `var` is considered invalid
+        if it contains undefined elements (`np.nan`).
+    dims : None or int or tuple
+        Expected number of dimensions (if `dims` is an integer) or shape
+        (if `dims` is a tuple) of `var`. By default, singleton dimensions
+        of `var` are ignored if `dims` is a tuple, i.e., for `dims = (10, )`
+        an array `var` with `var.shape = (10, 1)` is considered valid. However,
+        if singleton dimensions are explicitly queried by setting `dims = (10, 1)`
+        any array `var` with `var.shape = (10, )` or `var.shape = (1, 10)` is
+        considered invalid.
+        Unknown dimensions can be represented as `None`, i.e., for
+        `dims = (10, None)` arrays with shape `(10, 1)`, `(10, 100)` or
+        `(10, 0)` are all considered valid, however, any 1d-array (e.g.,
+        `var.shape = (10,)`) is invalid.
+        If `dims` is an integer, `var.ndim` has to match `dims` exactly, i.e.,
+        any array `var` with `var.shape = (10, )` is considered invalid if
+        `dims = 2` and conversely, `dims = 1` and `var.shape = (10,  1)`
+        triggers an exception.
+
+    Returns
+    -------
+    arr : np.ndarray
+        NumPy array conversion of input `var`
     """
 
     # If necessary, convert `var` to simplify parsing
@@ -420,7 +479,7 @@ def _array_parser(var, varname="varname", ntype=None, hasinf=None, hasnan=None, 
 
 
 # Ensure provided trial start/stop times are actually found in data
-def _is_close(timeArr, trialTimes):
+def _is_close(timeArr : ArrayLike, trialTimes: ArrayLike) -> None:
     """
     WARNING: This only works for sorted `timeArr` arrays!
     """
@@ -438,21 +497,22 @@ def _is_close(timeArr, trialTimes):
 
 
 @validate_arguments(config=dict(arbitrary_types_allowed=True))
-def export2nwb(data_dir : str,
-               output : str,
-               memuse : Optional[int] = 3000,
-               session_description : Optional[str] = None,
-               identifier : Optional[str] = None,
-               session_id : Optional[str] = None,
-               session_start_time : Optional[datetime] = None,
-               trial_start_times : Optional[Union[List[float], Tuple[float], np.ndarray]] = None,
-               trial_stop_times : Optional[Union[List[float], Tuple[float], np.ndarray]] = None,
-               trial_tags : Optional[Union[List[str], Tuple[str], np.ndarray]] = None,
-               trial_markers : Optional[Union[List, Tuple, np.ndarray]] = None,
-               experimenter : Optional[str] = None,
-               lab : Optional[str] = None,
-               institution : Optional[str] = None,
-               experiment_description : Optional[str] = None) -> None:
+def export2nwb(
+    data_dir : str,
+    output : str,
+    memuse : int = 3000,
+    session_description : Optional[str] = None,
+    identifier : Optional[str] = None,
+    session_id : Optional[str] = None,
+    session_start_time : Optional[datetime] = None,
+    trial_start_times : Optional[Union[List[float], Tuple[float], np.ndarray]] = None,
+    trial_stop_times : Optional[Union[List[float], Tuple[float], np.ndarray]] = None,
+    trial_tags : Optional[Union[List[str], Tuple[str], np.ndarray]] = None,
+    trial_markers : Optional[Union[List, Tuple, np.ndarray]] = None,
+    experimenter : Optional[str] = None,
+    lab : Optional[str] = None,
+    institution : Optional[str] = None,
+    experiment_description : Optional[str] = None) -> None:
     """
     Export binary OpenEphys data to NWB 2.x
 
@@ -494,7 +554,7 @@ def export2nwb(data_dir : str,
         or `trial_markers`, **not*** both.
     trial_tags : array-like or None
         List, tuple or 1darry comprising `numTrial` trial labels.
-    trial_markers : 2 element list or tuple
+    trial_markers : 2 element list or tuple or None
         Event markers ``(start, stop)`` for delimiting trials. Trials can be set via
         `trial_start_times`/`trial_stop_times` or `trial_markers`, **not*** both.
     experimenter : str or None
@@ -622,51 +682,52 @@ def export2nwb(data_dir : str,
         data = rec.continuous[0].samples
         timeStamps = rec.continuous[0].timestamps / eInfo.sampleRate
 
-        # Get OE event data;
-        evtPd = session.recordnodes[0].recordings[rk].events
-        evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
-        ts = evtPd.timestamp.to_numpy()  / eInfo.sampleRate
+        # Get OE event data
+        if len(eInfo.eventDirs) > 0:
+            evtPd = session.recordnodes[0].recordings[rk].events
+            evt = np.load(os.path.join(eInfo.eventDirs[rk], "full_words.npy")).astype(int)
+            ts = evtPd.timestamp.to_numpy()  / eInfo.sampleRate
 
-        # If 16bit event-markers are used, combine 2 full words
-        if eInfo.eventDtypes[rk] == "int16":
-            evt16 = np.zeros((evt.shape[0]), int)
-            for irow in range(evt.shape[0]):
-                evt16[irow] = int(format(evt[irow,1], "08b") + format(evt[irow,0], "08b"), 2)
-            evt = evt16
+            # If 16bit event-markers are used, combine 2 full words
+            if eInfo.eventDtypes[rk] == "int16":
+                evt16 = np.zeros((evt.shape[0]), int)
+                for irow in range(evt.shape[0]):
+                    evt16[irow] = int(format(evt[irow,1], "08b") + format(evt[irow,0], "08b"), 2)
+                evt = evt16
 
-        # If trial markers were provided, ensure they are consistent w/event-data
-        if trial_markers is not None:
-            # find unique evt only
-            evt_ts = np.stack((evt, ts),axis=-1)
-            evt_unique, ind = np.unique(evt_ts, axis=0, return_index=True)
-            evt_unique = evt_ts[np.sort(ind)]
+            # If trial markers were provided, ensure they are consistent w/event-data
+            if trial_markers is not None:
+                # find unique evt only
+                evt_ts = np.stack((evt, ts),axis=-1)
+                evt_unique, ind = np.unique(evt_ts, axis=0, return_index=True)
+                evt_unique = evt_ts[np.sort(ind)]
 
-            trial_start_idx = np.where(evt_unique[:,0] == trial_markers[0])[0]
-            trial_stop_idx = np.where(evt_unique[:,0] == trial_markers[1])[0]
+                trial_start_idx = np.where(evt_unique[:,0] == trial_markers[0])[0]
+                trial_stop_idx = np.where(evt_unique[:,0] == trial_markers[1])[0]
 
-            # take care of recording stopping before trial end
-            if trial_stop_idx.size == trial_start_idx.size-1:
-                trial_start_idx = trial_start_idx[:-1]
+                # take care of recording stopping before trial end
+                if trial_stop_idx.size == trial_start_idx.size-1:
+                    trial_start_idx = trial_start_idx[:-1]
 
-            if trial_start_idx.size != trial_stop_idx.size:
-                err = "Provided `trial_markers` yield unequal trial start/stop counts"
-                raise ValueError(err)
+                if trial_start_idx.size != trial_stop_idx.size:
+                    err = "Provided `trial_markers` yield unequal trial start/stop counts"
+                    raise ValueError(err)
 
-            trial_start_times = evt_unique[:,1][trial_start_idx]
-            trial_stop_times = evt_unique[:,1][trial_stop_idx]
+                trial_start_times = evt_unique[:,1][trial_start_idx]
+                trial_stop_times = evt_unique[:,1][trial_stop_idx]
 
-            if any(trial_stop_times - trial_start_times <= 0):
-                err = "Provided `trial_markers` contain trials with length <= 0"
-                raise ValueError(err)
+                if any(trial_stop_times - trial_start_times <= 0):
+                    err = "Provided `trial_markers` contain trials with length <= 0"
+                    raise ValueError(err)
 
-        # If trial delimiters were provided, ensure those are actually found in the data
-        if trial_start_times is not None:
-            _is_close(timeStamps, trial_start_times)
-            _is_close(timeStamps, trial_stop_times)
+            # If trial delimiters were provided, ensure those are actually found in the data
+            if trial_start_times is not None:
+                _is_close(timeStamps, trial_start_times)
+                _is_close(timeStamps, trial_stop_times)
 
-            # If no trial tags were provided, generate dummy ones
-            if trial_tags is None:
-                trial_tags = [None] * len(trial_start_times)
+                # If no trial tags were provided, generate dummy ones
+                if trial_tags is None:
+                    trial_tags = [None] * len(trial_start_times)
 
         # Either use provided (single!) session ID or generate one based on `recDir`
         if eInfo.session_id is None:
@@ -738,24 +799,24 @@ def export2nwb(data_dir : str,
             # Use default name of NWB object to increase chances that 3rd party
             # tools operate seamlessly with it; also use `rate` instead of storing
             # timestamps to ensure tools relying on constant sampling rate work
-            
+
             # Simple speed improvement by keeping data memory mapped when possible
             if np.all(np.diff(elecIdxs) == 1):
                 elecIdxs_efficient.append(np.s_[elecIdxs[0]:elecIdxs[-1]+1])
             else:
                 elecIdxs_efficient.append(elecIdxs)
-                
+
             # calculate 1 mb chunksizes
             membytes = 1024 **2
             nSamp = int(membytes / (len(elecIdxs) * data.dtype.itemsize))
             chunk_sz = (nSamp, len(elecIdxs))
-                
+
             wrapped_data = H5DataIO(
                 data=np.empty(shape=(0, len(elecIdxs)), dtype=data.dtype),#data[:, elecIdxs_efficient],
                 chunks=chunk_sz,          # <---- Enable chunking
                 maxshape=(None, len(elecIdxs)),  # <---- Make the time dimension unlimited and hence resizeable
             )
-            
+
             elecData = ElectricalSeries(name="ElectricalSeries_{}".format(esCounter),
                                         data=wrapped_data,
                                         electrodes=elecRegion,
@@ -812,13 +873,13 @@ def export2nwb(data_dir : str,
         outFileName = os.path.join(outBase, outName + outExt).format(rk)
         with NWBHDF5IO(outFileName, "w") as io:
             io.write(nwbfile)
-        
+
         # delete memory maps
         data_loc = data.filename
         data_shape = data.shape
         data_dtype = data.dtype
         del data, rec, timeStamps, session
-        
+
         # write data to NWB file in blocks
         with NWBHDF5IO(outFileName, mode='a') as io:
             nwbfile = io.read()
@@ -826,7 +887,7 @@ def export2nwb(data_dir : str,
                 print('Writing NWB data ',elecData.name)
                 nwb_data = nwbfile.get_acquisition(elecData.name).data
                 nwb_data.resize((data_shape[0],nwb_data.maxshape[1]))#data[:, elecIdxs_efficient[ii]].shape)
-                
+
                 # Given memory cap, compute how many data blocks can be grabbed per swipe:
                 # `nSamp` is the no. of samples that can be loaded into memory without exceeding `memuse`
                 # `rem` is the no. of remaining samples, s. t. ``nSamp + rem = angDset.shape[0]`
@@ -835,27 +896,31 @@ def export2nwb(data_dir : str,
                 nSamp = int(membytes / (nwb_data.shape[1] * data_dtype.itemsize))
                 rem = int(data_shape[0] % nSamp)
                 blockList = [nSamp] * int(data_shape[0] // nSamp) + [rem] * int(rem > 0)
-                
+
                 real_memuse = (nSamp*nwb_data.shape[1]* data_dtype.itemsize)/1024**3
                 print("Writing data in blocks of {} GB".format(round(real_memuse, 2)))
-                
-                
+
+
                 for m, M in enumerate(blockList):
                     st, end = m * nSamp, m * nSamp + M
                     newfp = np.memmap(data_loc, dtype=data_dtype, mode='r', shape=(data_shape))
                     nwb_data[st:end, :] = newfp[st:end, elecIdxs_efficient[ii]]
                     del newfp
-        
-        
+
+
         # Perform validation of generated NWB file: https://pynwb.readthedocs.io/en/latest/validation.html
         this_python = os.path.join(os.path.dirname(sys.executable),'python')
         subprocess.run([this_python, "-m", "pynwb.validate", outFileName], check=True)
 
+        # Happy breakdown
+        print(f"Succesfully wrote {outFileName}")
+        print("ALL DONE")
+
         return
-    
-    
+
+
 # Parse CL args
-def clarg_parser(args):
+def clarg_parser(args : List) -> Union[None, Dict]:
     """
     Helper function for parsing CL argument input
     """

@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2023 Ernst Strüngmann Institute (ESI) for Neuroscience
+in Cooperation with Max Planck Society
+SPDX-License-Identifier: CC-BY-NC-SA-1.0
+-->
+
 # oephys2nwb: Export Open Ephys binary data to NWB 2.x
 
 ## Summary
@@ -18,7 +24,6 @@ and released free of charge under the
 The package can be installed with `pip`
 
 ```shell
-pip install git+https://github.com/open-ephys/open-ephys-python-tools
 pip install esi-oephys2nwb
 ```
 
@@ -42,7 +47,6 @@ information about conda, please refer to the [official documentation](https://do
 ```shell
 conda create -n oephys2nwb-env python=3.8 pip
 conda activate oephys2nwb-env
-pip install git+https://github.com/open-ephys/open-ephys-python-tools
 pip install esi-oephys2nwb
 ```
 

@@ -1,3 +1,10 @@
+#
+# Copyright © 2023 Ernst Strüngmann Institute (ESI) for Neuroscience
+# in Cooperation with Max Planck Society
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+
 stages:
     - upload
     - deploy
@@ -5,7 +12,8 @@ stages:
 pypitest:
     stage: upload
     only:
-    - main
+    - "0.5"
+    - "0.6"
     - tags
     tags:
     - deploy
