@@ -12,7 +12,8 @@ stages:
 pypitest:
     stage: upload
     only:
-    - main
+    - "0.5"
+    - "0.6"
     - tags
     tags:
     - deploy

@@ -30,8 +30,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - switched to semantic versioning to differentiate main release branches
 - write data in blocks by @KatharineShapcott #11
 
-### REMOVED
-### DEPRECATED
 ### FIXED
 - use TTL sample_rate not message by @KatharineShapcott #14
 - increase write speed x2 using channel index slice by @KatharineShapcott #10
